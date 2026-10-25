@@ -1,0 +1,6 @@
+build/
+deps/
+test/*.wav
+!test/.gitkeep
+build-config.log
+.DS_Store
