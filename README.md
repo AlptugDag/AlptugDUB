@@ -1,51 +1,47 @@
 # AlptugDUB
 
-**Seslendirme ve dublaj için doğal ses karakterleri: iri bir adam, küçük bir kız, bir canavar, bir cadı… hepsi kendi sesinizden, yapaylık olmadan.**
-*Natural voice characters for voice-over and dubbing, made from your own voice. English below.*
+**Seslendirme ve dublaj için ses karakterleri: iri bir adam, küçük bir kız, canavar, cadı… hepsi kendi sesinizden.**
+*Voice characters for voice-over and dubbing, made from your own voice. English below.*
 
 ![AlptugDUB](docs/screenshot.png)
 
-VST3 · Audio Unit · macOS 11+ · Apple Silicon ve Intel (universal) · Premiere Pro, Audition, DaVinci Resolve (Fairlight), Logic Pro, Reaper
+VST3 · Audio Unit · macOS 11+ · Apple Silicon ve Intel (universal)
 
 ---
 
 ## Ne yapar
 
-AlptugDUB önce sesinizi dinler ve öğrenir (perde aralığı, ses tipi, formantlar, parlaklık, nefes), sonra perdeyi ve
-gırtlağı (formantları) birbirinden bağımsız, faz uyumlu ve şeffaf biçimde değiştirir. Efekt sabit değildir: her ses
-darbesi, o anki perdeye, şiddete ve tonlamaya göre yeniden şekillenir. Yankı ya da süsleme eklemez; yalnızca sesin
+AlptugDUB önce sesinizi dinler ve öğrenir (perde aralığı, ses tipi, formantlar, parlaklık), sonra perdeyi ve gırtlağı
+(formantları) birbirinden bağımsız olarak değiştirir. Yankı ya da süsleme eklemez, gürültü katmaz; yalnızca sesin
 kendisini dönüştürür.
 
-- **Yapay zekâ ile perde analizi.** [SwiftF0](https://github.com/lars76/swift-f0) sinirsel perde modeli eklentinin
-  içinde, makinenizde çalışır (internet yok, ek kurulum yok). Fısıltıyı, nefesli sesi ve gırtlak cızırtısını (vocal fry)
-  doğru izler; oktav hatası yapmaz. Orijinal modelle sayısal olarak doğrulandı: perde farkı < 0,01 sent.
-- **Doğal ses motoru (TD-PSOLA).** Her gırtlak darbesi ayrı bir tane olarak yeniden dizilir: perde değişir, formantlar
-  yerinde kalır ya da istenen kadar kayar. "s", "ş", "f" gibi sessiz harfler hiç perdelenmez, dokuları bozulmaz.
-  Stereo ses tek bir analizle işlendiği için faz kayması olmaz.
-- **Geniş motor.** Müzik altındaki ses, koro ya da gürültülü kayıtlar için spektral motor (Signalsmith Stretch).
-- **13 karakter**, sesinize göre ayarlanır: Doğal, İri adam, Dev, Canavar, Erkek, Kadın, Küçük kız, Küçük oğlan,
-  Yaşlı adam, Yaşlı kadın, Cadı, Cüce, Goblin.
-- **Az düğme, çok yapay zekâ.** Perde ve Gırtlak büyük düğmelerdir; Tonlama, Yaş (−50 genç … +50 yaşlı), Hırıltı,
-  Nefes, Karışım ve Çıkış küçük düğmelerdir. Geri kalanını anahtarlar yönetir:
+- **Perde ve Gırtlak** büyük düğmelerdir. Perde ±18 yarım ton, Gırtlak ±8 yarım ton. Gırtlağı alçaltmak daha iri bir
+  beden, yükseltmek daha küçük bir beden gibi duyulur.
+- **Yaş** (−50 genç … +50 yaşlı), **Karışım** ve **Çıkış** küçük düğmelerdir.
+- **12 karakter** ve Doğal: İri adam, Dev, Canavar, Erkek, Kadın, Küçük kız, Küçük oğlan, Yaşlı adam, Yaşlı kadın, Cadı,
+  Cüce, Goblin. Hepsi öğrenilen sesinize göre ayarlanır.
+- **Yapay zekâ ile ses analizi.** [SwiftF0](https://github.com/lars76/swift-f0) sinirsel perde modeli eklentinin
+  içinde, makinenizde çalışır (internet yok, ek kurulum yok). Orijinal modelle sayısal olarak doğrulandı (perde farkı
+  < 0,01 sent).
+- **Anahtarlar:**
 
   | Anahtar | Ne yapar |
   | --- | --- |
-  | Yapay zekâ perde analizi | Sinirsel modeli açar (≈275 ms gecikme); kapalıyken hızlı analiz (≈110 ms) |
+  | Yapay zekâ perde analizi | Sesinizi sinirsel modelle öğrenir; kapalıyken hızlı analiz kullanılır |
   | Karakteri sesime uyarla | Ses öğrenildikçe karakterin perdesini ve gırtlağını sürekli yeniden hesaplar |
-  | Doğal gırtlak hareketi | Perde yükselip alçaldıkça gırtlak da gerçek bir ses gibi hareket eder |
-  | Dinamik tepki | Hırıltı, titreme ve nefes sesin şiddetini izler: bağırınca sertleşir, fısıldayınca yumuşar |
   | Akıllı ton dengesi | Kalınlaşan sese göğüs, incelen sese hava ekler; ton donuklaşmaz |
-  | Titreşimi yumuşat | Perdedeki titrekliği azaltır: daha kontrollü, oturaklı bir ses |
   | Seviyeyi koru | İşlenmiş ses, orijinali kadar yüksek kalır |
   | Gırtlak perdeyi izlesin | Formantlar perdeyle birlikte biraz kayar |
 
-  Genizden, Netlik, Gövde, Hava, Tepki, Hareket ve Kararlılık ayarları DAW otomasyonunda da açıktır.
-- **Hışırtısız.** Sessiz harflere (s, ş, f, nefes, oda gürültüsü) hiç dokunulmaz; yaş etkisi rastgele jitter/shimmer yerine yavaş bir titremedir; nefes yalnızca sesli kısımlarda ve çok az eklenir; formant kayarken anti-alias uygulanır. Gerçek bir kayıtla ölçüldü: Yaşlı kadın gibi presetlerde harmonik/gürültü oranı orijinalle aynı.
+  Genizden, Netlik, Gövde ve Hava ayarları DAW otomasyonunda da açıktır.
 - **Güvenli çıkış.** Zincirin sonunda yalnızca aşımlarda çalışan −0,3 dBFS limitleyici; NaN ya da patlama asla çıkmaz.
+
+Motor, spektral perde ve formant kaydırıcıdır ([Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch),
+MIT). Gerçek bir kayıtla ölçüldü: tüm presetlerde sesli kısımların harmonik/gürültü oranı orijinalle aynı ya da daha iyi.
 
 ## Kurulum
 
-1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-1.0.2-macOS.zip` dosyasını indirin ve açın.
+1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-1.1.0-macOS.zip` dosyasını indirin ve açın.
 2. Terminal'de klasörün içinde çalıştırın:
 
    ```bash
@@ -56,7 +52,7 @@ kendisini dönüştürür.
    indirme karantinasını kaldırır.
 3. DAW'ınızda eklentileri yeniden taratın. AlptugDUB, üretici **Alptuğ Dağ** altında görünür.
 
-Gecikme (latency) DAW'a bildirilir; Premiere, Audition, Resolve, Logic ve Reaper bunu otomatik olarak dengeler.
+Gecikme (latency) DAW'a bildirilir ve DAW tarafından dengelenir.
 
 ## Kaynaktan derleme
 
@@ -69,30 +65,23 @@ JUCE 9.0.4 ve Signalsmith Stretch 1.4.0 derleme sırasında sabit sürümleriyle
 
 Test araçları:
 
-- `build/dubtest giriş.wav çıkış.wav <perde> <formant>`: perde ve formant doğruluğu, kare-kare sapma, tıklama ve seviye ölçer.
-- `AlptugDUBSnapshot --stress`: 44,1/48/96 kHz, mono/stereo, değişken blok boyutları, tüm karakterler ve motor değişimleri.
+- `AlptugDUBSnapshot --render giriş.wav çıkış.wav <karakter>`: tüm eklenti zincirini bir dosyadan geçirir.
+- `AlptugDUBSnapshot --stress`: 44,1/48/96 kHz, mono/stereo, değişken blok boyutları, tüm karakterler.
 - `tools/swiftf0/check.py`: C++ sinirsel modeli orijinal ONNX modeliyle karşılaştırır.
-
-## Doğrulama
-
-- Steinberg VST3 validator: **47/47 test geçti**
-- Apple `auval -strict`: **AU VALIDATION SUCCEEDED**
-- Stres testi: 18 yapılandırmanın tamamı geçti; CPU yükü tek çekirdeğin ≈ %3'ü
 
 ---
 
 ## English
 
-AlptugDUB first learns the voice (pitch range, voice type, formants, brightness, breathiness), then moves pitch and
-formants independently, phase-coherently and transparently. Every glottal pulse is shaped from that moment's pitch,
-effort and melody, so nothing is a fixed effect. No reverb, no gimmicks: only the voice itself is transformed.
+AlptugDUB first learns the voice (pitch range, voice type, formants, brightness), then moves pitch and formants
+independently. No reverb, no added noise: only the voice itself is transformed.
 
-- On-device neural pitch tracking (SwiftF0, MIT) compiled into the plug-in, verified against the original ONNX model
-  (< 0.01 cent difference). Follows whispers, breathy voices and vocal fry without octave errors.
-- Natural engine: real-time TD-PSOLA, pitch marks on the glottal pulses, unvoiced consonants never re-pitched, stereo
-  driven by one mono analysis. Wide engine: Signalsmith Stretch for voices over music, choirs and noisy takes.
-- 13 characters tuned to the learned voice; two big knobs (Pitch, Formant), six small ones, eight AI switches.
-- Reported latency: about 275 ms with AI analysis, 110 ms without (compensated by every host listed above).
+- Two big knobs (Pitch ±18 st, Formant ±8 st), three small ones (Age −50…+50, Mix, Output), 12 characters plus
+  Natural, all tuned to the learned voice.
+- On-device neural pitch analysis (SwiftF0, MIT) compiled into the plug-in; verified against the original ONNX model.
+- Switches: AI analysis, fit character to my voice, smart tone, keep level, formant follows pitch.
+- A -0.3 dBFS safety limiter closes the chain.
+- Engine: spectral pitch and formant shifting (Signalsmith Stretch, MIT).
 - Install: download the release zip, run `sh install.sh`, rescan plug-ins.
 
 ## Yapımcı / Author

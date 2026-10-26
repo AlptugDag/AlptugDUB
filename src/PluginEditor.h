@@ -70,10 +70,10 @@ private:
     std::unique_ptr<juce::Drawable> signature;
 
     Knob pitch, formant;
-    Knob range, age, growl, breath, mix, output;
+    Knob age, mix, output;
     juce::OwnedArray<juce::ToggleButton> switches; // the AI switches
     juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> switchAttachments;
-    juce::TextButton natural, wide, relearn, aboutButton;
+    juce::TextButton relearn, aboutButton;
     juce::OwnedArray<juce::TextButton> characterButtons;
     AboutPage about;
 
@@ -81,6 +81,6 @@ private:
     std::array<float, 180> history{}; // the last 6 seconds of pitch, Hz (0 = unvoiced)
     int historyPos = 0;
     adub::VoiceSummary summary;
-    juce::Rectangle<float> panelArea, analysisArea, engineArea, metersArea, switchesArea, charactersArea;
+    juce::Rectangle<float> panelArea, analysisArea, metersArea, switchesArea, charactersArea;
     float confidence = 0;
 };

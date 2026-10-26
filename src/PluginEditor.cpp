@@ -136,12 +136,8 @@ AlptugDUBEditor::AlptugDUBEditor(AlptugDUBProcessor& p)
       pitch(p.state, ids::pitch, T("Perde", "Pitch"), T("Sesin perdesi, yarım ton. Çift tık: sıfırla", "Voice pitch in semitones. Double-click: reset"), true),
       formant(p.state, ids::formant, T("Gırtlak", "Formant"),
               T("Ses yolunun boyu: aşağısı iri bir beden, yukarısı küçük", "Vocal tract size: down is a bigger body, up a smaller one"), true),
-      range(p.state, ids::range, T("Tonlama", "Intonation"), T("Melodinin genişliği: azı tekdüze, çoğu canlı", "How wide the melody moves")),
       age(p.state, ids::age, T("Yaş", "Age"),
-          T("Eksi: daha genç, parlak ve düzgün. Artı: daha yaşlı, titrek ve nefesli",
-            "Minus: younger, brighter and steadier. Plus: older, trembling and breathier")),
-      growl(p.state, ids::growl, T("Hırıltı", "Growl"), T("Ses tellerinin hırıltısı (vocal fry)", "Vocal-fold growl (vocal fry)")),
-      breath(p.state, ids::breath, T("Nefes", "Breath"), T("Nefesli, fısıltılı ses", "Breathy, airy voice")),
+          T("Eksi: daha genç ve parlak. Artı: daha yaşlı ve koyu", "Minus: younger and brighter. Plus: older and darker")),
       mix(p.state, ids::mix, T("Karışım", "Mix"), T("İşlenmiş ve orijinal ses", "Processed against original")),
       output(p.state, ids::output, T("Çıkış", "Output"), T("Çıkış seviyesi", "Output level")) {
     ui::setTurkish(turkish());
@@ -152,25 +148,18 @@ AlptugDUBEditor::AlptugDUBEditor(AlptugDUBProcessor& p)
     content.setSize(W, H);
     content.draw = [this](Graphics& g) { drawStage(g); };
 
-    for (auto* k : {&pitch, &formant, &range, &age, &growl, &breath, &mix, &output}) content.addAndMakeVisible(k);
+    for (auto* k : {&pitch, &formant, &age, &mix, &output}) content.addAndMakeVisible(k);
 
     // the AI switches: each hands a part of the voice to the analysis
     const char* sw[][5] = {
         {ids::ai, "Yapay zekâ perde analizi", "AI pitch analysis",
-         "Sinirsel perde modeli (SwiftF0): her sesi, fısıltıyı ve gırtlak cızırtısını doğru izler. ~275 ms gecikme; kapalıyken hızlı analiz, ~110 ms.",
-         "Neural pitch model (SwiftF0): follows every voice, whisper and vocal fry. ~275 ms delay; off uses fast analysis, ~110 ms."},
+         "Sinirsel perde modeli (SwiftF0) sesinizi öğrenir: perde aralığı, ses tipi, formantlar. Karakterler buna göre ayarlanır. Kapalıyken hızlı analiz kullanılır.",
+         "The neural pitch model (SwiftF0) learns your voice: pitch range, voice type, formants. Characters are tuned to it. Off uses the fast tracker."},
         {ids::autoMatch, "Karakteri sesime uyarla", "Fit character to my voice",
          "Öğrenilen sesinize göre karakterin perdesini ve gırtlağını sürekli yeniden hesaplar.",
          "Keeps recomputing the character's pitch and formants from your learned voice."},
-        {ids::autoTract, "Doğal gırtlak hareketi", "Natural tract motion",
-         "Perde yükselip alçaldıkça gırtlak da gerçek bir ses gibi hareket eder.", "The vocal tract moves with the pitch, as a real voice does."},
-        {ids::autoResponse, "Dinamik tepki", "Dynamic response",
-         "Hırıltı, titreme ve nefes sesin şiddetini izler: bağırınca sertleşir, fısıldayınca yumuşar.",
-         "Growl, tremble and breath follow the effort: harder when loud, softer when quiet."},
         {ids::autoTone, "Akıllı ton dengesi", "Smart tone",
          "Kalınlaşan sese göğüs, incelen sese hava ekler; ton hiç donuklaşmaz.", "Adds chest to a deeper voice and air to a lighter one."},
-        {ids::autoSteady, "Titreşimi yumuşat", "Steady pitch",
-         "Perdedeki titrekliği yumuşatır: daha kontrollü, oturaklı bir ses.", "Smooths pitch wobble: a steadier, more controlled voice."},
         {ids::loudness, "Seviyeyi koru", "Keep level", "İşlenmiş ses orijinal kadar yüksek kalır.", "The processed voice stays as loud as the original."},
         {ids::follow, "Gırtlak perdeyi izlesin", "Formant follows pitch", "Gırtlak perdeyle birlikte biraz kayar.",
          "Formants move a little with the pitch."},
@@ -189,13 +178,6 @@ AlptugDUBEditor::AlptugDUBEditor(AlptugDUBProcessor& p)
         b->onClick = [this, i] { proc.applyCharacter(i); };
         content.addAndMakeVisible(b);
     }
-    natural.setButtonText(T("Doğal ses", "Natural"));
-    wide.setButtonText(T("Geniş", "Wide"));
-    natural.setTooltip(T("Tek ses için en doğal motor (PSOLA)", "The most natural engine for one voice (PSOLA)"));
-    wide.setTooltip(T("Müzik altında, koro ya da gürültülü kayıtlar için", "For voices over music, choirs or noisy takes"));
-    for (auto* b : {&natural, &wide}) b->getProperties().set("segment", true);
-    natural.onClick = [this] { proc.state.getParameter(ids::engine)->setValueNotifyingHost(0.0f); };
-    wide.onClick = [this] { proc.state.getParameter(ids::engine)->setValueNotifyingHost(1.0f); };
     relearn.setButtonText(T("Sesimi yeniden öğren", "Learn my voice again"));
     relearn.onClick = [this] { proc.resetVoiceProfile(); };
     aboutButton.setButtonText(T("Hakkında", "About"));
@@ -203,7 +185,7 @@ AlptugDUBEditor::AlptugDUBEditor(AlptugDUBProcessor& p)
         about.setVisible(true);
         about.toFront(false);
     };
-    for (auto* b : {&natural, &wide, &relearn, &aboutButton}) content.addAndMakeVisible(b);
+    for (auto* b : {&relearn, &aboutButton}) content.addAndMakeVisible(b);
     about.setComponentID("about");
     content.addChildComponent(about);
 
@@ -229,9 +211,6 @@ int AlptugDUBEditor::currentCharacter() const { return roundToInt(proc.state.get
 
 void AlptugDUBEditor::layoutContent() {
     // top bar
-    engineArea = {756, 16, 216, 40};
-    natural.setBounds(760, 20, 112, 32);
-    wide.setBounds(874, 20, 94, 32);
     aboutButton.setBounds(1084, 16, 80, 40);
 
     panelArea = {44, 84, 1112, 620};
@@ -246,9 +225,9 @@ void AlptugDUBEditor::layoutContent() {
         switches[i]->setBounds((int) switchesArea.getX() + (i % 2) * 226, (int) switchesArea.getY() + 24 + (i / 2) * 37, 222, 32);
 
     // a few knobs, three across, then the meters
-    Knob* grid[] = {&range, &age, &growl, &breath, &mix, &output};
-    for (int i = 0; i < 6; ++i) grid[i]->setBounds(842 + (i % 3) * 97, 100 + (i / 3) * 96, 97, 96);
-    metersArea = {856, 316, 268, 236};
+    Knob* grid[] = {&age, &mix, &output};
+    for (int i = 0; i < 3; ++i) grid[i]->setBounds(842 + i * 97, 130, 97, 110);
+    metersArea = {856, 290, 268, 236};
 
     // characters, lit like a display
     charactersArea = {364, 592, 768, 92};
@@ -283,12 +262,6 @@ void AlptugDUBEditor::drawStage(Graphics& g) {
     g.drawText("DUB", Rectangle<float>(52 + aw, 16, 120, 42), Justification::left);
     caption(g, "by " + authorName, Rectangle<float>(56 + aw + 80, 29, 200, 16), Justification::left, 11.0f, colours::faint);
     if (signature) signature->drawWithin(g, Rectangle<float>(990, 6, 84, 60), RectanglePlacement::centred, 0.9f);
-
-    // the engine selector's track
-    g.setColour(colours::well);
-    g.fillRoundedRectangle(engineArea, 10);
-    g.setColour(Colours::white.withAlpha(0.06f));
-    g.drawRoundedRectangle(engineArea.reduced(0.5f), 10, 1);
 
     // the instrument panel, screwed down
     art::panel(g, panelArea, 18);
@@ -389,9 +362,7 @@ void AlptugDUBEditor::drawAnalysis(Graphics& g) {
                        String(roundToInt(summary.lowF0)) + String::fromUTF8("–") + String(roundToInt(summary.highF0)) + ")",
                    inner.removeFromTop(20), Justification::left);
         g.setColour(colours::dim);
-        g.drawText(T("Parlaklık ", "Brightness ") + String(roundToInt(summary.brightness)) + " Hz   " + T("Nefes ", "Breath ") +
-                       String(roundToInt(summary.breathiness * 100)) + "%",
-                   inner.removeFromTop(20), Justification::left);
+        g.drawText(T("Parlaklık ", "Brightness ") + String(roundToInt(summary.brightness)) + " Hz", inner.removeFromTop(20), Justification::left);
     } else {
         g.setColour(colours::dim);
         g.drawFittedText(T("Birkaç saniye konuşun: AlptugDUB sesinizi öğrenir ve karakterleri ona göre ayarlar.",
@@ -489,9 +460,6 @@ void AlptugDUBEditor::timerCallback() {
 
     const int ch = currentCharacter();
     for (int i = 0; i < characterButtons.size(); ++i) characterButtons[i]->setToggleState(i == ch, dontSendNotification);
-    const bool w = proc.state.getRawParameterValue(ids::engine)->load() > 0.5f;
-    natural.setToggleState(!w, dontSendNotification);
-    wide.setToggleState(w, dontSendNotification);
     content.repaint(analysisArea.toNearestInt().expanded(2));
     content.repaint(metersArea.toNearestInt().expanded(2));
     confidence += (proc.liveConfidence.load() - confidence) * 0.3f;

@@ -5,7 +5,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
-/** Every sample rate, block size, layout and character, switching analysis and engine mid-stream. */
+/** Every sample rate, block size, layout and character, switching the analysis mid-stream. */
 static int stress() {
     juce::Random rng(1);
     int failures = 0;
@@ -22,8 +22,6 @@ static int stress() {
                 int worstStep = 0, worstChar = 0;
                 bool finite = true;
                 const int steps = (int) (sr * 8.0 / (maxBlock / 2.0)); // about 8 seconds of audio
-                const bool wideOnly = std::getenv("STRESS_WIDE") != nullptr;
-                if (wideOnly) proc.state.getParameter(ids::engine)->setValueNotifyingHost(1.0f);
                 for (int step = 0; step < steps; ++step) {
                     const int n = 1 + rng.nextInt(maxBlock); // hosts may send any size up to the maximum
                     for (int i = 0; i < n; ++i, t += 1.0 / sr) {
@@ -53,8 +51,6 @@ static int stress() {
                         ai->setValueNotifyingHost(ai->getValue() > 0.5f ? 0.0f : 1.0f);
                         juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
                     }
-                    if (!wideOnly && step == steps * 11 / 20) proc.state.getParameter(ids::engine)->setValueNotifyingHost(1.0f);
-                    if (!wideOnly && step == steps * 13 / 20) proc.state.getParameter(ids::engine)->setValueNotifyingHost(0.0f);
                 }
                 const bool ok = finite && worst < 4.0f;
                 failures += ok ? 0 : 1;
@@ -64,8 +60,8 @@ static int stress() {
     return failures == 0 ? 0 : 1;
 }
 
-/** --render in.wav out.wav character [engine]: the whole plug-in on a file, written as 32-bit float WAV. */
-static int render(const char* in, const char* out, int character, bool wide) {
+/** --render in.wav out.wav character: the whole plug-in on a file, written as 32-bit float WAV. */
+static int render(const char* in, const char* out, int character) {
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(juce::File::getCurrentWorkingDirectory().getChildFile(in)));
@@ -75,7 +71,6 @@ static int render(const char* in, const char* out, int character, bool wide) {
     AlptugDUBProcessor proc;
     proc.setPlayConfigDetails(2, 2, sr, block);
     proc.prepareToPlay(sr, block);
-    if (wide) proc.state.getParameter(ids::engine)->setValueNotifyingHost(1.0f);
     // let it learn the voice first (as in a real session), then apply the character
     juce::AudioBuffer<float> src((int) 2, (int) reader->lengthInSamples);
     reader->read(&src, 0, (int) reader->lengthInSamples, 0, true, true);
@@ -119,7 +114,7 @@ static int render(const char* in, const char* out, int character, bool wide) {
 
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI gui;
-    if (argc > 4 && juce::String(argv[1]) == "--render") return render(argv[2], argv[3], std::atoi(argv[4]), argc > 5);
+    if (argc > 4 && juce::String(argv[1]) == "--render") return render(argv[2], argv[3], std::atoi(argv[4]));
     if (argc > 1 && juce::String(argv[1]) == "--stress") return stress();
     if (argc < 2) {
         std::fprintf(stderr, "usage: AlptugDUBSnapshot out.png [voice.wav] [character] [scale] [--about]\n");
@@ -146,7 +141,6 @@ int main(int argc, char** argv) {
             const int perFrame = 48000 / 30;
             int since = 0;
             float peakIn = 0, peakOut = 0;
-            if (std::getenv("SNAP_WIDE")) proc.state.getParameter(ids::engine)->setValueNotifyingHost(1.0f);
             for (juce::int64 pos = 0; pos < reader->lengthInSamples; pos += 512) {
                 reader->read(&buf, 0, 512, pos, true, true);
                 if (reader->numChannels == 1) buf.copyFrom(1, 0, buf, 0, 0, 512);
