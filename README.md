@@ -44,7 +44,7 @@ kendisini dönüştürür.
 
 ## Kurulum
 
-1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-macOS.zip` dosyasını indirin ve açın.
+1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-1.0.0-macOS.zip` dosyasını indirin ve açın.
 2. Terminal'de klasörün içinde çalıştırın:
 
    ```bash
