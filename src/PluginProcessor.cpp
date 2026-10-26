@@ -47,14 +47,14 @@ const std::vector<AlptugDUBProcessor::Character>& AlptugDUBProcessor::characters
         {"giant",     "Dev",          "Giant",        70,  -8,  -5.0f,  0.70f, 0.20f, 0.05f,  10, 0.00f, 4.0f, -2.0f, 0.6f, 0.2f, 0.3f},
         {"monster",   "Canavar",      "Monster",      62, -10,  -4.0f,  0.55f, 0.75f, 0.15f,  15, 0.00f, 4.0f, -1.0f, 0.9f, 0.1f, 0.4f},
         {"man",       "Erkek",        "Man",         115,  -7,   0.0f,  0.95f, 0.00f, 0.00f,   0, 0.00f, 1.5f,  0.0f, 0.5f, 0.3f, 0.0f},
-        {"woman",     "Kadın",        "Woman",       205,   7,   2.2f,  1.10f, 0.00f, 0.08f,   0, 0.00f, 0.0f,  1.0f, 0.4f, 0.35f, 0.0f},
-        {"girl",      "Küçük kız",    "Little girl", 300,   9,   4.5f,  1.30f, 0.00f, 0.12f, -40, 0.05f,-2.0f,  2.0f, 0.3f, 0.4f, 0.0f},
-        {"boy",       "Küçük oğlan",  "Little boy",  265,   7,   4.0f,  1.25f, 0.00f, 0.08f, -35, 0.00f,-1.5f,  1.5f, 0.3f, 0.4f, 0.0f},
+        {"woman",     "Kadın",        "Woman",       205,   7,   2.2f,  1.10f, 0.00f, 0.08f,   0, 0.00f, 0.0f,  0.5f, 0.4f, 0.35f, 0.0f},
+        {"girl",      "Küçük kız",    "Little girl", 300,   9,   4.5f,  1.30f, 0.00f, 0.12f, -40, 0.05f,-2.0f,  0.5f, 0.3f, 0.4f, 0.0f},
+        {"boy",       "Küçük oğlan",  "Little boy",  265,   7,   4.0f,  1.25f, 0.00f, 0.08f, -35, 0.00f,-1.5f,  0.5f, 0.3f, 0.4f, 0.0f},
         {"oldman",    "Yaşlı adam",   "Old man",     125,  -1,   0.0f,  0.90f, 0.05f, 0.30f,  30, 0.10f, 0.0f, -1.0f, 0.6f, 0.2f, 0.0f},
         {"oldwoman",  "Yaşlı kadın",  "Old woman",   185,   4,   2.0f,  1.00f, 0.00f, 0.30f,  30, 0.15f, 0.0f, -1.0f, 0.6f, 0.2f, 0.0f},
-        {"witch",     "Cadı",         "Witch",       235,   5,   2.6f,  1.45f, 0.12f, 0.35f,  25, 0.60f,-2.0f,  1.5f, 0.7f, 0.3f, 0.0f},
+        {"witch",     "Cadı",         "Witch",       235,   5,   2.6f,  1.45f, 0.12f, 0.35f,  25, 0.60f,-2.0f,  0.5f, 0.7f, 0.3f, 0.0f},
         {"dwarf",     "Cüce",         "Dwarf",       120,  -2,   2.5f,  0.90f, 0.15f, 0.00f,   5, 0.20f, 1.0f,  0.0f, 0.6f, 0.3f, 0.1f},
-        {"goblin",    "Goblin",       "Goblin",      270,   6,   3.5f,  1.35f, 0.35f, 0.10f,   5, 0.55f,-2.0f,  1.0f, 0.8f, 0.3f, 0.0f},
+        {"goblin",    "Goblin",       "Goblin",      270,   6,   3.5f,  1.35f, 0.35f, 0.10f,   5, 0.55f,-2.0f,  0.0f, 0.8f, 0.3f, 0.0f},
     };
     return list;
 }
@@ -145,8 +145,8 @@ void AlptugDUBProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
         f->prepare(spec);
         f->reset();
     }
-    noiseHp.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 1600.0, 0.7);
-    noiseLp.coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 7500.0, 0.7);
+    noiseHp.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, 900.0, 0.7);
+    noiseLp.coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, std::min(4800.0, sampleRate * 0.3), 0.7);
     lastBody = lastAir = lastNasal = lastPresence = 1000;
     for (auto* s : {&pitchSm, &formantSm, &mixSm, &gainSm}) s->reset(sampleRate, 0.05);
 
@@ -179,7 +179,7 @@ void AlptugDUBProcessor::reset() {
     for (auto* d : {&dryDelay, &padPsola, &padWide}) d->reset();
     noiseHp.reset();
     noiseLp.reset();
-    breathEnv = 0;
+    breathEnv = lowEnv = lowA = lowB = 0;
     levelDry = levelWet = 0;
     levelGain = 1;
     limitGain = 1;
@@ -377,20 +377,30 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         padWide.process(juce::dsp::ProcessContextReplacing<float>(wet));
     }
 
-    // ---- breath: aspiration noise riding on the voice's own envelope, more where the voice is soft ----
+    // ---- breath: aspiration noise, only where the voice is voiced ----
+    // Real breathiness is noise inside the voiced sound, shaped like the voice and following its
+    // pulses. It is added only where low frequencies dominate the finished signal (vowels, not "s",
+    // not silence), at a level that stays well under the voice, so it never turns into hiss.
     const float breath = juce::jlimit(0.0f, 1.0f, param(ids::breath) + shape.breath);
     if (breath > 0.001f) {
         const float response = param(ids::autoResponse) > 0.5f ? param(ids::response) : 0.0f;
         const float att = 1.0f - std::exp(-1.0f / (0.003f * (float) sr)), rel = 1.0f - std::exp(-1.0f / (0.060f * (float) sr));
         const float slow = 1.0f - std::exp(-1.0f / (1.5f * (float) sr));
+        const float lowCoef = 1.0f - std::exp(-2.0f * juce::MathConstants<float>::pi * 700.0f / (float) sr);
         for (int i = 0; i < n; ++i) {
             const float nz = noiseLp.processSample(noiseHp.processSample(rng.nextFloat() * 2.0f - 1.0f));
-            float level = 0;
-            for (int c = 0; c < ch; ++c) level = std::max(level, std::abs(buffer.getSample(c, i)));
+            float m = 0;
+            for (int c = 0; c < ch; ++c) m += buffer.getSample(c, i);
+            m /= (float) ch;
+            lowA += (m - lowA) * lowCoef;
+            lowB += (lowA - lowB) * lowCoef;
+            const float level = std::abs(m), lowLevel = std::abs(lowB);
             breathEnv += (level - breathEnv) * (level > breathEnv ? att : rel);
-            breathSlow += (breathEnv - breathSlow) * slow;
-            const float soft = juce::jlimit(0.0f, 1.0f, 1.0f - breathEnv / std::max(1e-5f, breathSlow));
-            const float add = nz * breathEnv * breath * 0.9f * (1.0f + response * 0.8f * soft);
+            lowEnv += (lowLevel - lowEnv) * (lowLevel > lowEnv ? att : rel);
+            breathSlow += (lowEnv - breathSlow) * slow;
+            const float voiced = juce::jlimit(0.0f, 1.0f, (lowEnv / std::max(1e-6f, breathEnv) - 0.35f) / 0.35f);
+            const float soft = juce::jlimit(0.0f, 1.0f, 1.0f - lowEnv / std::max(1e-5f, breathSlow));
+            const float add = nz * lowEnv * voiced * breath * 0.22f * (1.0f + response * 0.6f * soft);
             for (int c = 0; c < ch; ++c) buffer.addSample(c, i, add);
         }
     }
@@ -401,7 +411,7 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     float bodyAuto = 0, airAuto = shape.air;
     if (param(ids::autoTone) > 0.5f) {
         bodyAuto = juce::jlimit(-3.0f, 4.0f, -0.25f * p);
-        airAuto += juce::jlimit(-2.0f, 3.0f, 0.12f * p - 0.2f * f);
+        airAuto += juce::jlimit(-3.0f, 2.5f, 0.05f * p - 0.3f * f);
     }
     updateFilters(bodyAuto, airAuto);
     if (lastNasal > 0.001f) {

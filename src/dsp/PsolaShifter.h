@@ -344,7 +344,13 @@ private:
                 const float w = 0.5f * (1.0f + std::cos((float) M_PI * u));
                 const double src = (double) m.pos + (double) k * fr;
                 const size_t dst = (size_t) ((synthPos + offset + k) & mask);
-                for (int c = 0; c < channels; ++c) out[(size_t) c][dst] += sample(c, src) * w * gain;
+                for (int c = 0; c < channels; ++c) {
+                    // Reading the grain faster than real time (formants up) folds high frequencies back
+                    // down as hiss; a short box average over the stride keeps them out.
+                    const float v = fr > 1.08f ? (sample(c, src - 0.34 * (double) fr) + sample(c, src) + sample(c, src + 0.34 * (double) fr)) * (1.0f / 3.0f)
+                                               : sample(c, src);
+                    out[(size_t) c][dst] += v * w * gain;
+                }
                 wsum[dst] += w;
             }
             synthAcc += step;

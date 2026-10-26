@@ -64,8 +64,62 @@ static int stress() {
     return failures == 0 ? 0 : 1;
 }
 
+/** --render in.wav out.wav character [engine]: the whole plug-in on a file, written as 32-bit float WAV. */
+static int render(const char* in, const char* out, int character, bool wide) {
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(juce::File::getCurrentWorkingDirectory().getChildFile(in)));
+    if (!reader) return 1;
+    const double sr = reader->sampleRate;
+    const int block = 512;
+    AlptugDUBProcessor proc;
+    proc.setPlayConfigDetails(2, 2, sr, block);
+    proc.prepareToPlay(sr, block);
+    if (wide) proc.state.getParameter(ids::engine)->setValueNotifyingHost(1.0f);
+    // let it learn the voice first (as in a real session), then apply the character
+    juce::AudioBuffer<float> src((int) 2, (int) reader->lengthInSamples);
+    reader->read(&src, 0, (int) reader->lengthInSamples, 0, true, true);
+    if (reader->numChannels == 1) src.copyFrom(1, 0, src, 0, 0, src.getNumSamples());
+    const int total = src.getNumSamples(), tail = proc.getLatencySamples() + 4096;
+    juce::AudioBuffer<float> result(2, total + tail);
+    result.clear();
+    juce::MidiBuffer midi;
+    juce::AudioBuffer<float> buf(2, block);
+    for (int pos = 0; pos < total + tail; pos += block) {
+        const int n = std::min(block, total + tail - pos);
+        buf.clear();
+        for (int c = 0; c < 2; ++c)
+            if (pos < total) buf.copyFrom(c, 0, src, c, pos, std::min(n, total - pos));
+        juce::AudioBuffer<float> view(buf.getArrayOfWritePointers(), 2, n);
+        if (pos == 0) {
+            proc.applyCharacter(character);
+            // DUB_SET="breath=0,age=0": set parameters (real values) after the character, for experiments
+            if (const char* e = std::getenv("DUB_SET")) {
+                juce::StringArray items = juce::StringArray::fromTokens(e, ",", "");
+                for (auto& it : items)
+                    if (auto* prm = proc.state.getParameter(it.upToFirstOccurrenceOf("=", false, false)))
+                        prm->setValueNotifyingHost(prm->convertTo0to1(it.fromFirstOccurrenceOf("=", false, false).getFloatValue()));
+            }
+        }
+        proc.processBlock(view, midi);
+        for (int c = 0; c < 2; ++c) result.copyFrom(c, pos, view, c, 0, n);
+    }
+    // line the output up with the input
+    const int lat = proc.getLatencySamples();
+    juce::AudioBuffer<float> aligned(2, total);
+    for (int c = 0; c < 2; ++c) aligned.copyFrom(c, 0, result, c, lat, total);
+    juce::File f = juce::File::getCurrentWorkingDirectory().getChildFile(out);
+    f.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> writer(wav.createWriterFor(new juce::FileOutputStream(f), sr, 2, 32, {}, 0));
+    if (!writer) return 1;
+    writer->writeFromAudioSampleBuffer(aligned, 0, total);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI gui;
+    if (argc > 4 && juce::String(argv[1]) == "--render") return render(argv[2], argv[3], std::atoi(argv[4]), argc > 5);
     if (argc > 1 && juce::String(argv[1]) == "--stress") return stress();
     if (argc < 2) {
         std::fprintf(stderr, "usage: AlptugDUBSnapshot out.png [voice.wav] [character] [scale] [--about]\n");

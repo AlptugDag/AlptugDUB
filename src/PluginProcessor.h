@@ -119,7 +119,7 @@ private:
     using Eq = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
     Eq bodyEq, airEq, presenceEq, nasalPeak, nasalLow;
     juce::dsp::IIR::Filter<float> noiseHp, noiseLp; // breath noise, one channel
-    float breathEnv = 0, breathSlow = 1e-4f;
+    float breathEnv = 0, breathSlow = 1e-4f, lowEnv = 0, lowA = 0, lowB = 0;
     float levelDry = 0, levelWet = 0, levelGain = 1; // keep level
     float limitGain = 1;                             // output safety limiter
     juce::Random rng;
