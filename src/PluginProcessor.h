@@ -25,6 +25,9 @@ inline constexpr const char* loudness = "loudness";
 inline constexpr const char* ai = "ai";
 inline constexpr const char* autoMatch = "autoMatch";
 inline constexpr const char* autoTone = "autoTone";
+inline constexpr const char* autoTract = "autoTract";
+inline constexpr const char* autoResponse = "autoResponse";
+inline constexpr const char* autoSteady = "autoSteady";
 inline constexpr const char* character = "character";
 } // namespace ids
 
@@ -82,7 +85,7 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
     void timerCallback() override;
-    void updateFilters(float bodyExtra, float airExtra);
+    void updateFilters(float bodyExtra, float airExtra, float presenceExtra);
     float param(const char* id) const { return state.getRawParameterValue(id)->load(); }
 
     adub::SpectralShifter spectral;
@@ -99,6 +102,9 @@ private:
     using Eq = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
     Eq bodyEq, airEq, presenceEq, nasalPeak, nasalLow;
     float lastNasal = -1, lastBody = 1000, lastAir = 1000, lastPresence = 1000;
+    // live voice dynamics (from the fast tracker, 5 ms): the speaker's melody now and over the last second,
+    // and how hard they are speaking against their own average
+    float melodyFast = 0, melodySlow = 0, fastF0 = 0, effortFast = 0, effortSlow = 1e-4f, lastPresenceDyn = 0;
     float levelDry = 0, levelWet = 0, levelGain = 1; // keep level
     float limitGain = 1;                             // output safety limiter
     juce::SmoothedValue<float> pitchSm, formantSm, mixSm, gainSm;

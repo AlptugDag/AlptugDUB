@@ -29,6 +29,9 @@ kendisini dönüştürür.
   | --- | --- |
   | Yapay zekâ perde analizi | Sesinizi sinirsel modelle öğrenir; kapalıyken hızlı analiz kullanılır |
   | Karakteri sesime uyarla | Ses öğrenildikçe karakterin perdesini ve gırtlağını sürekli yeniden hesaplar |
+  | Doğal gırtlak hareketi | Perde yükselip alçaldıkça gırtlak da hafifçe hareket eder (en çok ±2 yarım ton) |
+  | Dinamik tepki | Ton sesin şiddetini izler: bağırınca daha parlak ve belirgin, kısılınca daha yumuşak ve sıcak |
+  | Titreşimi yumuşat | Perdedeki titrekliği ve ani oynamaları yumuşatır |
   | Akıllı ton dengesi | Kalınlaşan sese göğüs, incelen sese hava ekler; ton donuklaşmaz |
   | Seviyeyi koru | İşlenmiş ses, orijinali kadar yüksek kalır |
   | Gırtlak perdeyi izlesin | Formantlar perdeyle birlikte biraz kayar |
@@ -41,7 +44,7 @@ MIT). Gerçek bir kayıtla ölçüldü: tüm presetlerde sesli kısımların har
 
 ## Kurulum
 
-1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-1.1.0-macOS.zip` dosyasını indirin ve açın.
+1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-1.2.0-macOS.zip` dosyasını indirin ve açın.
 2. Terminal'de klasörün içinde çalıştırın:
 
    ```bash
@@ -79,7 +82,7 @@ independently. No reverb, no added noise: only the voice itself is transformed.
 - Two big knobs (Pitch ±18 st, Formant ±8 st), three small ones (Age −50…+50, Mix, Output), 12 characters plus
   Natural, all tuned to the learned voice.
 - On-device neural pitch analysis (SwiftF0, MIT) compiled into the plug-in; verified against the original ONNX model.
-- Switches: AI analysis, fit character to my voice, smart tone, keep level, formant follows pitch.
+- Switches: AI analysis, fit character to my voice, natural tract motion, dynamic response, steady pitch, smart tone, keep level, formant follows pitch.
 - A -0.3 dBFS safety limiter closes the chain.
 - Engine: spectral pitch and formant shifting (Signalsmith Stretch, MIT).
 - Install: download the release zip, run `sh install.sh`, rescan plug-ins.

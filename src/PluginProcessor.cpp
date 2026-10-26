@@ -78,6 +78,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout AlptugDUBProcessor::layout()
     l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::ai, 1}, "AI analysis", true));
     l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoMatch, 1}, "Auto match character", true));
     l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoTone, 1}, "Smart tone", true));
+    l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoTract, 1}, "Natural tract motion", true));
+    l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoResponse, 1}, "Dynamic response", true));
+    l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoSteady, 1}, "Steady pitch", false));
     StringArray names;
     for (auto& c : characters()) names.add(c.nameEn);
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{ids::character, 1}, "Character", names, 0));
@@ -135,17 +138,21 @@ void AlptugDUBProcessor::reset() {
     levelDry = levelWet = 0;
     levelGain = 1;
     limitGain = 1;
+    melodyFast = melodySlow = fastF0 = 0;
+    effortFast = 0;
+    effortSlow = 1e-4f;
+    lastPresenceDyn = 0;
     pitchSm.setCurrentAndTargetValue(param(ids::pitch));
     formantSm.setCurrentAndTargetValue(param(ids::formant));
     mixSm.setCurrentAndTargetValue(param(ids::mix));
     gainSm.setCurrentAndTargetValue(juce::Decibels::decibelsToGain(param(ids::output)));
 }
 
-void AlptugDUBProcessor::updateFilters(float bodyExtra, float airExtra) {
+void AlptugDUBProcessor::updateFilters(float bodyExtra, float airExtra, float presenceExtra) {
     const float body = juce::jlimit(-9.0f, 9.0f, param(ids::body) + bodyExtra);
     const float air = juce::jlimit(-9.0f, 9.0f, param(ids::air) + airExtra);
     const float nasal = param(ids::nasal);
-    const float presence = param(ids::presence);
+    const float presence = juce::jlimit(-9.0f, 9.0f, param(ids::presence) + presenceExtra);
     if (std::abs(body - lastBody) > 0.01f) {
         *bodyEq.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf(sr, 170.0, 0.7, juce::Decibels::decibelsToGain(body));
         lastBody = body;
@@ -154,7 +161,7 @@ void AlptugDUBProcessor::updateFilters(float bodyExtra, float airExtra) {
         *airEq.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf(sr, std::min(9000.0, sr * 0.4), 0.7, juce::Decibels::decibelsToGain(air));
         lastAir = air;
     }
-    if (presence != lastPresence) {
+    if (std::abs(presence - lastPresence) > 0.05f) {
         *presenceEq.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sr, 3200.0, 0.9, juce::Decibels::decibelsToGain(presence));
         lastPresence = presence;
     }
@@ -251,6 +258,14 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             const auto e = yin.estimate();
             if (e.voiced()) profile.addBreath(e.aperiodicity);
             voicedNow = e.voiced() && e.rms > 0.003f;
+            fastF0 = voicedNow ? (float) (sr / e.period) : 0.0f;
+            if (fastF0 > 0) {
+                // the melody now (about 40 ms) and over the last second or so
+                const float lf = std::log(fastF0);
+                if (melodyFast <= 0 || melodySlow <= 0) melodyFast = melodySlow = lf;
+                melodyFast += (lf - melodyFast) * 0.12f;
+                melodySlow += (lf - melodySlow) * 0.008f;
+            }
             if (!useNeural) {
                 profile.addEstimate(e, hop);
                 liveF0.store(voicedNow ? (float) (sr / e.period) : 0.0f);
@@ -262,6 +277,14 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             liveF0.store(e.voiced() ? (float) (sr / e.period) : 0.0f);
             liveConfidence.store(e.confidence);
         }
+    }
+    {
+        // how hard the speaker is speaking: block loudness against their own average (voiced only)
+        float e2 = 0;
+        for (int i = 0; i < n; ++i) e2 += m[i] * m[i];
+        const float rmsNow = std::sqrt(e2 / (float) n), blockSec = (float) n / (float) sr;
+        effortFast += (rmsNow - effortFast) * (1.0f - std::exp(-blockSec / 0.06f));
+        if (fastF0 > 0 && rmsNow > 0.003f) effortSlow += (rmsNow - effortSlow) * (1.0f - std::exp(-blockSec / 2.0f));
     }
     profile.addAudio(m, n, voicedNow);
     {
@@ -279,8 +302,17 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
 
     // ---- the voice engine: pitch and formants shifted independently ----
     const auto shape = ageShape(param(ids::age));
-    pitchSm.setTargetValue(param(ids::pitch) + shape.pitch);
-    formantSm.setTargetValue(param(ids::formant) + shape.formant);
+    // Dynamics, all slow and smoothed (the shifter itself is never driven per pulse):
+    //  steady   the pitch contour is pulled a little toward its own average, so wobble calms down
+    //  tract    the vocal tract moves with the melody, as a real larynx does (at most +-2 st)
+    float dynPitch = 0, dynFormant = 0;
+    const bool voiceNow = melodyFast > 0 && melodySlow > 0 && fastF0 > 0;
+    if (voiceNow && param(ids::autoSteady) > 0.5f)
+        dynPitch = juce::jlimit(-1.2f, 1.2f, -0.45f * 12.0f * (melodyFast - melodySlow) / std::log(2.0f));
+    if (voiceNow && param(ids::autoTract) > 0.5f && summaryCopy.medianF0 > 0)
+        dynFormant = juce::jlimit(-2.0f, 2.0f, 0.1f * 12.0f * (melodyFast - std::log(summaryCopy.medianF0)) / std::log(2.0f));
+    pitchSm.setTargetValue(param(ids::pitch) + shape.pitch + dynPitch);
+    formantSm.setTargetValue(param(ids::formant) + shape.formant + dynFormant);
     pitchSm.skip(n);
     formantSm.skip(n);
     const float p = pitchSm.getCurrentValue();
@@ -298,7 +330,14 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         bodyAuto = juce::jlimit(-3.0f, 4.0f, -0.25f * p);
         airAuto += juce::jlimit(-3.0f, 2.5f, 0.05f * p - 0.3f * f);
     }
-    updateFilters(bodyAuto, airAuto);
+    // dynamic response: a voice gets brighter and more present as the speaker pushes, softer and warmer when they ease off
+    float presenceDyn = 0;
+    if (param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f) {
+        const float effort = juce::jlimit(0.4f, 2.5f, effortFast / effortSlow);
+        presenceDyn = 2.5f * juce::jlimit(-1.0f, 1.0f, std::log2(effort));
+    }
+    lastPresenceDyn += (presenceDyn - lastPresenceDyn) * 0.25f;
+    updateFilters(bodyAuto, airAuto, lastPresenceDyn);
     if (lastNasal > 0.001f) {
         nasalPeak.process(juce::dsp::ProcessContextReplacing<float>(wet));
         nasalLow.process(juce::dsp::ProcessContextReplacing<float>(wet));
