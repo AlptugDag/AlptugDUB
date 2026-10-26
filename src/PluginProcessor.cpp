@@ -31,7 +31,7 @@ AgeShape ageShape(float age) {
         s.air = 1.5f * y;
     } else {
         s.wear = a;
-        s.breath = 0.12f * a;
+        s.breath = 0.03f * a;
         s.formant = -0.3f * a;
     }
     return s;
@@ -42,19 +42,19 @@ const std::vector<AlptugDUBProcessor::Character>& AlptugDUBProcessor::characters
     // targetF0: the character's speaking pitch. formant: its vocal tract, in semitones above an adult man's.
     static const std::vector<Character> list = {
         //  id          Türkçe          English        F0   pitch tract range growl breath age  nasal body  air  resp tract stab
-        {"natural",   "Doğal",        "Natural",       0,   0,   0.0f,  1.00f, 0.00f, 0.00f,   0, 0.00f, 0.0f,  0.0f, 0.5f, 0.3f, 0.0f},
-        {"bigman",    "İri adam",     "Big man",      88,  -4,  -2.5f,  0.85f, 0.08f, 0.00f,   5, 0.00f, 3.0f, -1.0f, 0.5f, 0.3f, 0.1f},
-        {"giant",     "Dev",          "Giant",        70,  -8,  -5.0f,  0.70f, 0.20f, 0.05f,  10, 0.00f, 4.0f, -2.0f, 0.6f, 0.2f, 0.3f},
-        {"monster",   "Canavar",      "Monster",      62, -10,  -4.0f,  0.55f, 0.75f, 0.15f,  15, 0.00f, 4.0f, -1.0f, 0.9f, 0.1f, 0.4f},
-        {"man",       "Erkek",        "Man",         115,  -7,   0.0f,  0.95f, 0.00f, 0.00f,   0, 0.00f, 1.5f,  0.0f, 0.5f, 0.3f, 0.0f},
-        {"woman",     "Kadın",        "Woman",       205,   7,   2.2f,  1.10f, 0.00f, 0.08f,   0, 0.00f, 0.0f,  0.5f, 0.4f, 0.35f, 0.0f},
-        {"girl",      "Küçük kız",    "Little girl", 300,   9,   4.5f,  1.30f, 0.00f, 0.12f, -40, 0.05f,-2.0f,  0.5f, 0.3f, 0.4f, 0.0f},
-        {"boy",       "Küçük oğlan",  "Little boy",  265,   7,   4.0f,  1.25f, 0.00f, 0.08f, -35, 0.00f,-1.5f,  0.5f, 0.3f, 0.4f, 0.0f},
-        {"oldman",    "Yaşlı adam",   "Old man",     125,  -1,   0.0f,  0.90f, 0.05f, 0.30f,  30, 0.10f, 0.0f, -1.0f, 0.6f, 0.2f, 0.0f},
-        {"oldwoman",  "Yaşlı kadın",  "Old woman",   185,   4,   2.0f,  1.00f, 0.00f, 0.30f,  30, 0.15f, 0.0f, -1.0f, 0.6f, 0.2f, 0.0f},
-        {"witch",     "Cadı",         "Witch",       235,   5,   2.6f,  1.45f, 0.12f, 0.35f,  25, 0.60f,-2.0f,  0.5f, 0.7f, 0.3f, 0.0f},
-        {"dwarf",     "Cüce",         "Dwarf",       120,  -2,   2.5f,  0.90f, 0.15f, 0.00f,   5, 0.20f, 1.0f,  0.0f, 0.6f, 0.3f, 0.1f},
-        {"goblin",    "Goblin",       "Goblin",      270,   6,   3.5f,  1.35f, 0.35f, 0.10f,   5, 0.55f,-2.0f,  0.0f, 0.8f, 0.3f, 0.0f},
+        {"natural",   "Doğal",        "Natural",       0, 0, 0.0f, 1.00f, 0.00f, 0.00f, 0, 0.00f, 0.0f,  0.0f, 0.5f, 0.3f, 0.0f},
+        {"bigman",    "İri adam",     "Big man",      88, -4, -2.5f, 0.85f, 0.08f, 0.00f, 3, 0.00f, 3.0f, -1.0f, 0.5f, 0.3f, 0.1f},
+        {"giant",     "Dev",          "Giant",        70, -8, -5.0f, 0.70f, 0.20f, 0.00f, 6, 0.00f, 4.0f, -2.0f, 0.6f, 0.2f, 0.3f},
+        {"monster",   "Canavar",      "Monster",      62, -10, -4.0f, 0.55f, 0.75f, 0.00f, 9, 0.00f, 4.0f, -1.0f, 0.9f, 0.1f, 0.4f},
+        {"man",       "Erkek",        "Man",         115, -7, 0.0f, 0.95f, 0.00f, 0.00f, 0, 0.00f, 1.5f,  0.0f, 0.5f, 0.3f, 0.0f},
+        {"woman",     "Kadın",        "Woman",       205, 7, 2.2f, 1.10f, 0.00f, 0.00f, 0, 0.00f, 0.0f,  0.5f, 0.4f, 0.35f, 0.0f},
+        {"girl",      "Küçük kız",    "Little girl", 300, 9, 4.5f, 1.30f, 0.00f, 0.00f, -40, 0.03f,-2.0f,  0.5f, 0.3f, 0.4f, 0.0f},
+        {"boy",       "Küçük oğlan",  "Little boy",  265, 7, 4.0f, 1.25f, 0.00f, 0.00f, -35, 0.00f,-1.5f,  0.5f, 0.3f, 0.4f, 0.0f},
+        {"oldman",    "Yaşlı adam",   "Old man",     125, -1, 0.0f, 0.90f, 0.05f, 0.04f, 18, 0.05f, 0.0f, -1.0f, 0.6f, 0.2f, 0.0f},
+        {"oldwoman",  "Yaşlı kadın",  "Old woman",   185, 4, 2.0f, 1.00f, 0.00f, 0.04f, 18, 0.07f, 0.0f, -1.0f, 0.6f, 0.2f, 0.0f},
+        {"witch",     "Cadı",         "Witch",       235, 5, 2.6f, 1.45f, 0.12f, 0.04f, 15, 0.30f,-2.0f,  0.5f, 0.7f, 0.3f, 0.0f},
+        {"dwarf",     "Cüce",         "Dwarf",       120, -2, 2.5f, 0.90f, 0.15f, 0.00f, 3, 0.10f, 1.0f,  0.0f, 0.6f, 0.3f, 0.1f},
+        {"goblin",    "Goblin",       "Goblin",      270, 6, 3.5f, 1.35f, 0.35f, 0.00f, 3, 0.28f,-2.0f,  0.0f, 0.8f, 0.3f, 0.0f},
     };
     return list;
 }

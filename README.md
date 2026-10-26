@@ -40,12 +40,12 @@ kendisini dönüştürür.
   | Gırtlak perdeyi izlesin | Formantlar perdeyle birlikte biraz kayar |
 
   Genizden, Netlik, Gövde, Hava, Tepki, Hareket ve Kararlılık ayarları DAW otomasyonunda da açıktır.
-- **Hışırtısız nefes.** Nefes, yalnızca sesli (vokal) kısımlarda ve sesin kendi tayfında eklenir; sessizlikte ve "s" gibi harflerde asla. Formantlar yukarı kayarken oluşan yapay tizlik anti-alias ile engellenir. Gerçek kayıtla ölçüldü: tüm presetlerde yüksek frekans payı orijinalin ≈3 dB içinde.
+- **Hışırtısız.** Sessiz harflere (s, ş, f, nefes, oda gürültüsü) hiç dokunulmaz; yaş etkisi rastgele jitter/shimmer yerine yavaş bir titremedir; nefes yalnızca sesli kısımlarda ve çok az eklenir; formant kayarken anti-alias uygulanır. Gerçek bir kayıtla ölçüldü: Yaşlı kadın gibi presetlerde harmonik/gürültü oranı orijinalle aynı.
 - **Güvenli çıkış.** Zincirin sonunda yalnızca aşımlarda çalışan −0,3 dBFS limitleyici; NaN ya da patlama asla çıkmaz.
 
 ## Kurulum
 
-1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-1.0.1-macOS.zip` dosyasını indirin ve açın.
+1. [Releases](https://github.com/AlptugDag/AlptugDUB/releases) sayfasından `AlptugDUB-1.0.2-macOS.zip` dosyasını indirin ve açın.
 2. Terminal'de klasörün içinde çalıştırın:
 
    ```bash

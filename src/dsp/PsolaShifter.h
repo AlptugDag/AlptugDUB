@@ -153,7 +153,7 @@ public:
         int64_t t = emitEnd - n;
         for (int i = 0; i < n; ++i, ++t) {
             const size_t k = (size_t) (t & mask);
-            const float norm = 1.0f / std::max(1.0f, wsum[k]);
+            const float norm = 1.0f / std::max(kMinCover, wsum[k]);
             float o0 = 0, i0 = 0;
             for (int c = 0; c < channels; ++c) {
                 float v = t >= 0 ? out[(size_t) c][k] * norm : 0.0f;
@@ -185,6 +185,8 @@ private:
     };
 
     static constexpr float kMinFormantRatio = 0.63f; // -8 semitones
+    /** Overlap-add is divided by the window sum, down to this floor, so gaps between grains cannot ripple the level. */
+    static constexpr float kMinCover = 0.3f;
 
     int latencyFor(int64_t delay, int estimateSpacing) const {
         // The lowest formant ratio sets the longest output grain; marks need 1.3 periods of signal
@@ -235,14 +237,30 @@ private:
             int64_t next = lastMark + (int64_t) std::lround(T);
             if (next > horizon) break;
             if (voiced) {
-                // the glottal pulse: largest low-passed peak near one period ahead
-                const int64_t lo = lastMark + (int64_t) (0.8f * T), hi = lastMark + (int64_t) (1.2f * T);
-                float bestV = -1e9f;
-                for (int64_t p = lo; p <= hi; ++p) {
-                    float v = lp[(size_t) (p & mask)];
-                    if (v > bestV) {
-                        bestV = v;
-                        next = p;
+                // The next pulse is where the waveform best repeats the last one: the position near one
+                // period ahead whose neighbourhood correlates best with the neighbourhood of the previous
+                // mark (on the 1 kHz low-passed signal). Marks then keep the same phase pulse after pulse,
+                // so grains line up and re-spacing them leaves no roughness.
+                const int64_t lo = lastMark + (int64_t) (0.75f * T), hi = lastMark + (int64_t) (1.25f * T);
+                const int half = std::max(4, (int) (0.45f * T));
+                double refEnergy = 0;
+                for (int k = -half; k <= half; ++k) {
+                    const float v = lp[(size_t) ((lastMark + k) & mask)];
+                    refEnergy += (double) v * v;
+                }
+                double bestScore = -1e30;
+                for (int64_t q = lo; q <= hi; ++q) {
+                    double dot = 0, en = 0;
+                    for (int k = -half; k <= half; ++k) {
+                        const float a = lp[(size_t) ((lastMark + k) & mask)], c = lp[(size_t) ((q + k) & mask)];
+                        dot += (double) a * c;
+                        en += (double) c * c;
+                    }
+                    // similarity, with a mild pull toward the pitch tracker's period
+                    const double score = dot / std::sqrt(refEnergy * en + 1e-20) - 0.15 * std::abs((double) (q - lastMark) - (double) T) / (double) T;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        next = q;
                     }
                 }
                 T = (float) (next - lastMark);
@@ -303,8 +321,13 @@ private:
                 const float effort = std::clamp(level / std::max(1e-5f, slowLevel), 0.2f, 2.5f);
                 const float drive = 1.0f + responseAmount * (std::min(effort, 1.8f) - 1.0f); // 1 = average effort
 
+                // the melody the speaker is really following: pulse-to-pulse measurement noise is smoothed
+                // away (about 3 pulses) so widening or flattening it cannot add roughness
+                const float logNow = std::log(f0);
+                if (!wasVoiced) melodyLog = logNow;
+                melodyLog += (logNow - melodyLog) * 0.35f;
                 float ratio = pitchRatio;
-                if (intonation != 1.0f && centreF0 > 0.0f) ratio *= std::pow(centreF0 / f0, 1.0f - intonation);
+                if (intonation != 1.0f && centreF0 > 0.0f) ratio *= std::exp((1.0f - intonation) * (std::log(centreF0) - melodyLog));
                 // stability: follow a smoothed pitch contour instead of every pulse's own pitch
                 const float logF0 = std::log(f0);
                 if (!wasVoiced) smoothLogF0 = logF0;
@@ -315,9 +338,10 @@ private:
                     const float a = ageAmount * std::clamp(drive, 0.4f, 1.6f);
                     tremor += 2.0 * M_PI * 5.5 * right / sr;
                     if (tremor > 2.0 * M_PI) tremor -= 2.0 * M_PI;
-                    ratio *= std::pow(2.0f, a * 0.45f / 12.0f * (float) std::sin(tremor));
-                    ratio *= 1.0f + a * 0.025f * noise(); // jitter
-                    gain *= 1.0f + a * 0.18f * noise();   // shimmer
+                    // a slow tremble and a slow drift in level. Random pulse-to-pulse jitter and shimmer
+                    // are left out on purpose: they are what sounds like hiss.
+                    ratio *= std::pow(2.0f, a * 0.30f / 12.0f * (float) std::sin(tremor));
+                    gain *= 1.0f + a * 0.05f * (float) std::sin(tremor * 0.37 + 1.3);
                 }
                 const float g = std::clamp(growlAmount * drive, 0.0f, 1.0f);
                 if (g > 0.0f && (parity ^= 1)) {
@@ -331,12 +355,12 @@ private:
                 step = right / std::clamp(ratio, 0.33f, 3.0f);
                 fr = formantRatio;
                 if (tractAmount > 0.0f && centreF0 > 0.0f)
-                    fr *= std::clamp(std::pow(f0 / centreF0, 0.2f * tractAmount), 0.89f, 1.12f); // at most 2 st either way
+                    fr *= std::clamp(std::exp(0.2f * tractAmount * (melodyLog - std::log(centreF0))), 0.89f, 1.12f); // at most 2 st either way
                 fr = std::clamp(fr, kMinFormantRatio, 1.6f);
             } else {
                 wasVoiced = false;
                 step = right;
-                fr = 1.0f + (formantRatio - 1.0f) * 0.5f; // fricatives move half as far
+                fr = 1.0f; // s, ş, f, breaths and room noise pass through untouched
             }
             const int hl = std::max(2, (int) std::lround(left / fr)), hr = std::max(2, (int) std::lround(right / fr));
             for (int k = -hl; k <= hr; ++k) {
@@ -369,7 +393,7 @@ private:
     float intonation = 1, growlAmount = 0, ageAmount = 0, centreF0 = 0;
     float responseAmount = 0, tractAmount = 0, stabilityAmount = 0;
     float envNow = 0, envAttack = 0.01f, envRelease = 0.001f, slowLevel = 1e-4f, slowCoef = 1e-5f;
-    float smoothLogF0 = 0;
+    float smoothLogF0 = 0, melodyLog = 0;
     bool wasVoiced = false;
     double tremor = 0;
     int parity = 0;
