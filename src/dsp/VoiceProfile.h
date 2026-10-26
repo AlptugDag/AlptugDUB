@@ -61,6 +61,10 @@ public:
         fill = 0;
         hannW.resize((size_t) frame);
         for (int i = 0; i < frame; ++i) hannW[(size_t) i] = 0.5f - 0.5f * std::cos(2.0f * (float) M_PI * i / (frame - 1));
+        // working space for analyseFrame, allocated here so the audio thread never allocates
+        spec.assign((size_t) frame, {});
+        cep.assign((size_t) frame, {});
+        mag.assign((size_t) frame / 2, 0.0f);
         reset();
     }
 
@@ -71,23 +75,33 @@ public:
         formantN = 0;
         centroidAcc = 0;
         breathAcc = 0;
-        frames = 0;
+        breathSeen = false;
         voicedSamples = 0;
     }
 
-    /** Feeds the input voice and the tracker's newest estimate (call once per hop). */
-    void addEstimate(const PitchEstimate& e, int hopSamples) {
+    /**
+     * Feeds a pitch estimate (call for every estimate). After the first seconds the profile slowly
+     * forgets (about 20 s), so it follows the speaker if the voice or the speaker changes.
+     */
+    void addEstimate(const PitchEstimate& e, int spacingSamples) {
         if (!e.voiced() || e.rms < 0.003f) return;
         const float f0 = (float) (sr / e.period);
         const int bin = binOf(f0);
-        if (bin >= 0) {
-            hist[(size_t) bin] += 1.0f;
-            total += 1.0f;
+        if (bin < 0) return;
+        if (voicedSamples > sr * 4) {
+            const float keep = (float) std::exp(-spacingSamples / (20.0 * sr));
+            for (auto& h : hist) h *= keep;
+            total *= keep;
         }
-        breathAcc += e.aperiodicity / 0.15f;
-        ++frames;
-        voicedSamples += hopSamples;
-        lastVoiced = true;
+        hist[(size_t) bin] += 1.0f;
+        total += 1.0f;
+        voicedSamples += spacingSamples;
+    }
+
+    /** Feeds an aperiodicity measure of a voiced frame (YIN's d'), for breathiness. */
+    void addBreath(float aperiodicity) {
+        breathAcc += (std::clamp(aperiodicity / 0.15f, 0.0f, 1.0f) - breathAcc) * 0.002f;
+        breathSeen = true;
     }
 
     /** Feeds raw input (mono) for the spectral measures. */
@@ -112,10 +126,10 @@ public:
             s.highF0 = percentile(0.9f);
             s.type = classify(s.medianF0);
         }
-        if (formantN > 0)
-            for (int k = 0; k < 3; ++k) s.formants[(size_t) k] = formantAcc[(size_t) k] / (float) formantN;
-        if (formantN > 0) s.brightness = centroidAcc / (float) formantN;
-        if (frames > 0) s.breathiness = std::clamp(breathAcc / (float) frames, 0.0f, 1.0f);
+        if (formantN > 0.5f)
+            for (int k = 0; k < 3; ++k) s.formants[(size_t) k] = formantAcc[(size_t) k] / formantN;
+        if (formantN > 0.5f) s.brightness = centroidAcc / formantN;
+        if (breathSeen) s.breathiness = std::clamp(breathAcc, 0.0f, 1.0f);
         return s;
     }
 
@@ -175,7 +189,6 @@ private:
     }
 
     void analyseFrame() {
-        std::vector<std::complex<float>> spec((size_t) frame);
         double energy = 0;
         for (int i = 0; i < frame; ++i) {
             spec[(size_t) i] = buf[(size_t) i] * hannW[(size_t) i];
@@ -184,7 +197,6 @@ private:
         if (energy / frame < 1e-5) return;
         fft(spec, false);
         const int half = frame / 2;
-        std::vector<float> mag((size_t) half);
         double num = 0, den = 0;
         for (int k = 0; k < half; ++k) {
             const float m = std::abs(spec[(size_t) k]);
@@ -194,7 +206,6 @@ private:
             den += m;
         }
         // real cepstrum, liftered below 1.6 ms: the vocal tract's envelope, without the harmonics
-        std::vector<std::complex<float>> cep((size_t) frame);
         for (int k = 0; k < frame; ++k) {
             const int kk = k < half ? k : frame - k;
             cep[(size_t) k] = std::log(std::max(1e-9f, kk < half ? mag[(size_t) kk] : mag[(size_t) half - 1]));
@@ -215,23 +226,25 @@ private:
             }
         }
         if (nf == 3) {
-            for (int i = 0; i < 3; ++i) formantAcc[(size_t) i] += found[(size_t) i];
-            centroidAcc += (float) (num / std::max(1e-9, den));
-            ++formantN;
+            // a running average that forgets after about 200 frames (20 s)
+            const float keep = formantN > 50 ? 0.995f : 1.0f;
+            for (int i = 0; i < 3; ++i) formantAcc[(size_t) i] = formantAcc[(size_t) i] * keep + found[(size_t) i];
+            centroidAcc = centroidAcc * keep + (float) (num / std::max(1e-9, den));
+            formantN = formantN * keep + 1.0f;
         }
     }
 
     double sr = 48000;
     int frame = 2048, fill = 0;
-    std::vector<float> buf, hannW;
+    std::vector<float> buf, hannW, mag;
+    std::vector<std::complex<float>> spec, cep;
     std::array<float, kBins> hist{};
     float total = 0;
     std::array<float, 3> formantAcc{};
-    int formantN = 0;
+    float formantN = 0;
     float centroidAcc = 0, breathAcc = 0;
-    int frames = 0;
+    bool breathSeen = false;
     double voicedSamples = 0;
-    bool lastVoiced = false;
 };
 
 } // namespace adub

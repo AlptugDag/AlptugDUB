@@ -4,9 +4,11 @@
 //
 // Prints the learned voice profile of the input and the output, the pitch change actually achieved,
 // the formant movement, clicks (sample jumps the input never has) and the level change.
+#include "../src/dsp/NeuralPitch.h"
 #include "../src/dsp/PsolaShifter.h"
 #include "../src/dsp/VoiceProfile.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -196,6 +198,7 @@ static adub::VoiceSummary profileOf(const Wav& w, int offset) {
             auto e = t.estimate();
             voiced = e.voiced();
             p.addEstimate(e, hop);
+            if (e.voiced()) p.addBreath(e.aperiodicity);
         }
     }
     return p.summary();
@@ -271,6 +274,20 @@ static std::vector<float> lpcFormants(const Wav& w) {
     return peaks;
 }
 
+// Pitch every 16 ms by the neural tracker, 0 when unvoiced: to check the output frame by frame.
+static std::vector<float> track(const Wav& w) {
+    adub::NeuralPitch t;
+    t.prepare(w.sr);
+    std::vector<float> f;
+    const size_t tail = (size_t) t.delaySamples() + 4096;
+    for (size_t i = 0; i < w.data[0].size() + tail; ++i)
+        if (t.push(i < w.data[0].size() ? w.data[0][i] : 0.0f)) {
+            const auto& e = t.latest();
+            f.push_back(e.voiced() && e.rms > 0.003f ? (float) (w.sr / e.period) : 0.0f);
+        }
+    return f;
+}
+
 static void print(const char* name, const adub::VoiceSummary& s) {
     std::printf("%-7s F0 median %6.1f Hz (%.1f-%.1f)  F1 %5.0f  F2 %5.0f  F3 %5.0f  centroid %5.0f  breath %.2f  voiced %.1fs\n",
                 name, s.medianF0, s.lowF0, s.highF0, s.formants[0], s.formants[1], s.formants[2], s.brightness,
@@ -293,15 +310,32 @@ int main(int argc, char** argv) {
     if (argc < 5 + base) return 2;
     const char* outPath = argv[2 + base];
     const float ps = (float) std::atof(argv[3 + base]), fs = (float) std::atof(argv[4 + base]);
+    // DUB_YIN=1 uses the fast YIN analysis instead of the neural one (SwiftF0)
+    const bool useYin = std::getenv("DUB_YIN") != nullptr;
+    adub::PitchTracker yin;
+    adub::NeuralPitch neural;
+    yin.prepare(w.sr);
+    neural.prepare(w.sr);
     adub::PsolaShifter shifter;
-    shifter.prepare(w.sr, w.ch);
+    shifter.prepare(w.sr, w.ch, neural.delaySamples());
+    const int hop = (int) std::lround(w.sr * 0.005);
+    if (useYin) shifter.setAnalysis(yin.delaySamples(), hop);
+    else shifter.setAnalysis(neural.delaySamples(), neural.spacing());
     shifter.setRatios(std::pow(2.0f, ps / 12.0f), std::pow(2.0f, fs / 12.0f));
+    if (const char* d = std::getenv("DUB_DYN")) { // "range,growl,age,response,tract,stability,median"
+        float v[7] = {1, 0, 0, 0, 0, 0, 0};
+        std::sscanf(d, "%f,%f,%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6]);
+        shifter.setCharacter(v[0], v[1], v[2], v[6]);
+        shifter.setDynamics(v[3], v[4], v[5]);
+    }
     const int lat = shifter.latencySamples();
     Wav o = w;
     for (auto& c : o.data) c.resize(c.size() + (size_t) lat, 0.0f);
     std::vector<float*> ptr((size_t) w.ch);
     const int block = 512;
     std::vector<std::vector<float>> tmp((size_t) w.ch, std::vector<float>(block));
+    int hopCount = 0;
+    const auto t0 = std::chrono::steady_clock::now();
     for (size_t pos = 0; pos < o.data[0].size(); pos += block) {
         const int n = (int) std::min<size_t>(block, o.data[0].size() - pos);
         for (int c = 0; c < w.ch; ++c) {
@@ -309,10 +343,25 @@ int main(int argc, char** argv) {
                 tmp[(size_t) c][(size_t) i] = pos + i < w.data[(size_t) c].size() ? w.data[(size_t) c][pos + i] : 0.0f;
             ptr[(size_t) c] = tmp[(size_t) c].data();
         }
+        for (int i = 0; i < n; ++i) {
+            float m = 0;
+            for (int c = 0; c < w.ch; ++c) m += tmp[(size_t) c][(size_t) i];
+            m /= (float) w.ch;
+            yin.push(m);
+            if (++hopCount >= hop) {
+                hopCount = 0;
+                const auto e = yin.estimate();
+                if (useYin) shifter.pushEstimate(e);
+            }
+            if (neural.push(m) && !useYin) shifter.pushEstimate(neural.latest());
+        }
         shifter.process(ptr.data(), n);
         for (int c = 0; c < w.ch; ++c)
             for (int i = 0; i < n; ++i) o.data[(size_t) c][pos + i] = tmp[(size_t) c][(size_t) i];
     }
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("cpu     %.2f%% of one core (%.3f s for %.1f s of audio)\n", 100.0 * secs * w.sr / (double) o.data[0].size(), secs,
+                (double) o.data[0].size() / w.sr);
     // remove the latency so the output lines up with the input
     for (auto& c : o.data) c.erase(c.begin(), c.begin() + lat);
     writeWav(outPath, o);
@@ -327,6 +376,21 @@ int main(int argc, char** argv) {
         auto fa = lpcFormants(w), fb = lpcFormants(o);
         for (size_t k = 0; k < std::min<size_t>(3, std::min(fa.size(), fb.size())); ++k)
             std::printf("F%zu      %5.0f -> %5.0f Hz  wanted %+5.2f st, got %+5.2f st\n", k + 1, fa[k], fb[k], fs, 12.0f * std::log2(fb[k] / fa[k]));
+    }
+    {
+        // frames where input and output are both voiced: how many miss the wanted shift by > 1 st
+        const auto fi = track(w), fo = track(o);
+        int both = 0, off = 0, octave = 0;
+        for (size_t k = 0; k < std::min(fi.size(), fo.size()); ++k) {
+            if (fi[k] <= 0 || fo[k] <= 0) continue;
+            ++both;
+            const float err = std::abs(12.0f * std::log2(fo[k] / fi[k]) - ps);
+            if (err > 1.0f) ++off;
+            if (err > 9.0f) ++octave;
+            if (err > 1.0f && std::getenv("DUB_VERBOSE")) std::printf("  %.3fs in %.1f out %.1f\n", k * 0.016, fi[k], fo[k]);
+        }
+        std::printf("frames  %d voiced, %.2f%% off by >1 st, %.2f%% octave jumps\n", both, both ? 100.0 * off / both : 0.0,
+                    both ? 100.0 * octave / both : 0.0);
     }
     std::printf("formant wanted %+5.2f st, got %+5.2f st (spectral envelope)\n", fs, envelopeShift(envelope(w), envelope(o)));
     // clicks: output sample jumps larger than anything in the input

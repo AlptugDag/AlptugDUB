@@ -1,7 +1,7 @@
 // AlptugDUB by Alptuğ Dağ — voice pitch tracking.
 //
 // YIN (de Cheveigné & Kawahara, 2002) on a copy of the signal decimated to about 12 kHz: accurate for
-// speech and singing between 65 Hz and 800 Hz, and cheap enough to run every 5 ms in real time.
+// speech and singing between 50 Hz and 800 Hz, and cheap enough to run every 5 ms in real time.
 #pragma once
 
 #include <algorithm>
@@ -17,12 +17,14 @@ struct PitchEstimate {
     float period = 0.0f;    // in input samples; 0 when unvoiced
     float aperiodicity = 1; // YIN's d'(tau): 0 = perfectly periodic, 1 = noise
     float rms = 0.0f;
+    float confidence = 0.0f; // neural tracker: probability that the frame is voiced
+    float candidate = 0.0f;  // neural tracker: its best period even when unvoiced
     bool voiced() const { return period > 0.0f; }
 };
 
 class PitchTracker {
 public:
-    static constexpr float kMinF0 = 65.0f;
+    static constexpr float kMinF0 = 50.0f;
     static constexpr float kMaxF0 = 800.0f;
 
     void prepare(double sampleRate) {
@@ -118,7 +120,7 @@ public:
     double sampleRate() const { return sr; }
 
 private:
-    static constexpr float kThreshold = 0.15f;
+    static constexpr float kThreshold = 0.3f;
 
     static int nextPow2(int n) {
         int p = 1;

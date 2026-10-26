@@ -18,6 +18,7 @@ public:
         channels = numChannels;
         stretch.presetDefault(numChannels, (float) sampleRate);
         scratch.assign((size_t) numChannels, std::vector<float>((size_t) maxBlock, 0.0f));
+        inPtr.assign((size_t) numChannels, nullptr);
         stretch.reset();
     }
 
@@ -34,9 +35,8 @@ public:
         if ((int) scratch[0].size() < n)
             for (auto& c : scratch) c.resize((size_t) n);
         for (int c = 0; c < channels; ++c) std::copy(data[c], data[c] + n, scratch[(size_t) c].begin());
-        std::vector<float*> in((size_t) channels);
-        for (int c = 0; c < channels; ++c) in[(size_t) c] = scratch[(size_t) c].data();
-        stretch.process(in.data(), n, data, n);
+        for (int c = 0; c < channels; ++c) inPtr[(size_t) c] = scratch[(size_t) c].data();
+        stretch.process(inPtr.data(), n, data, n);
     }
 
     void reset() { stretch.reset(); }
@@ -44,6 +44,7 @@ public:
 private:
     signalsmith::stretch::SignalsmithStretch<float> stretch;
     std::vector<std::vector<float>> scratch;
+    std::vector<float*> inPtr;
     double sr = 48000;
     int channels = 2;
 };

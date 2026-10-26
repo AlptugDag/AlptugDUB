@@ -6,16 +6,19 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-/** A knob with its name above the value. */
+#include <array>
+
+/** A knob with a spaced caption above and its value below. */
 class Knob : public juce::Component {
 public:
-    Knob(juce::AudioProcessorValueTreeState& s, const char* id, const juce::String& name, const juce::String& tip);
+    Knob(juce::AudioProcessorValueTreeState& s, const char* id, const juce::String& name, const juce::String& tip, bool big = false);
     void resized() override;
     void paint(juce::Graphics&) override;
     juce::Slider slider;
 
 private:
     juce::String title;
+    bool large;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
 };
 
@@ -28,17 +31,17 @@ public:
     }
 };
 
-/** The author's page: photo, a few words and where to follow him. */
+/** The author's page: photo, signature, a few words and where to follow him. */
 class AboutPage : public juce::Component {
 public:
     AboutPage();
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseUp(const juce::MouseEvent&) override { setVisible(false); }
-    std::function<void()> onClose;
 
 private:
-    juce::Image photo, signature;
+    juce::Image photo;
+    std::unique_ptr<juce::Drawable> signature;
     juce::OwnedArray<juce::TextButton> links;
     juce::TextButton close;
 };
@@ -48,28 +51,36 @@ public:
     explicit AlptugDUBEditor(AlptugDUBProcessor&);
     ~AlptugDUBEditor() override;
     void resized() override;
+    /** Advances the meters and the pitch history by one frame (the snapshot tool drives it). */
+    void refresh() { timerCallback(); }
 
-    static constexpr int W = 1100, H = 680;
+    static constexpr int W = 1200, H = 720;
 
 private:
     void timerCallback() override;
     void layoutContent();
     void drawStage(juce::Graphics&);
+    void drawAnalysis(juce::Graphics&);
+    int currentCharacter() const;
 
     AlptugDUBProcessor& proc;
     ui::Look look;
     Stage content; // laid out at W x H, scaled to the window
-    juce::Image wood, signature;
+    juce::Image wood;
+    std::unique_ptr<juce::Drawable> signature;
 
-    Knob pitch, formant, range, growl, age, breath, nasal, body, air, mix, output;
-    juce::ToggleButton follow, loudness;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> followAttach, loudnessAttach;
-    juce::OwnedArray<juce::TextButton> characterButtons;
+    Knob pitch, formant;
+    Knob range, age, growl, breath, mix, output;
+    juce::OwnedArray<juce::ToggleButton> switches; // the AI switches
+    juce::OwnedArray<juce::AudioProcessorValueTreeState::ButtonAttachment> switchAttachments;
     juce::TextButton natural, wide, relearn, aboutButton;
+    juce::OwnedArray<juce::TextButton> characterButtons;
     AboutPage about;
 
-    float vuIn = 0, vuOut = 0, micGlow = 0;
+    float inLevel = 0, outLevel = 0, inPeak = 0, outPeak = 0, liveF0 = 0;
+    std::array<float, 180> history{}; // the last 6 seconds of pitch, Hz (0 = unvoiced)
+    int historyPos = 0;
     adub::VoiceSummary summary;
-    float liveF0 = 0;
-    juce::Rectangle<float> micArea, profileArea, vuInArea, vuOutArea, signatureArea;
+    juce::Rectangle<float> panelArea, analysisArea, engineArea, metersArea, switchesArea, charactersArea;
+    float confidence = 0;
 };
