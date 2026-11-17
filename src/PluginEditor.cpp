@@ -391,6 +391,10 @@ void AlptugDUBEditor::drawGlassWave(Graphics& g, Rectangle<float> lens) {
     g.setGradientFill(glowBg);
     g.fillRect(lens);
 
+    // Semi-transparent signature watermark behind the voice-reactive wave ribbons
+    if (signature)
+        signature->drawWithin(g, lens.withSizeKeepingCentre(310.0f, 164.0f), RectanglePlacement::centred, 0.11f);
+
     // Smooth the 64-slot audio displacement ring for silky organic ribbons
     std::array<float, 64> smoothEnv{};
     for (int i = 0; i < 64; ++i) {
@@ -542,7 +546,7 @@ void AlptugDUBEditor::drawStage(Graphics& g) {
         g.setColour(colours::amber);
         g.setFont(font(10.0f, 700));
         g.drawText("2.0", verPill, Justification::centred);
-        if (signature) signature->drawWithin(g, Rectangle<float>(258.0f, 16.0f, 76.0f, 46.0f), RectanglePlacement::centred, 0.85f);
+        caption(g, "by " + authorName, Rectangle<float>(72.0f + aw + 102.0f, 32.0f, 160.0f, 14.0f), Justification::left, 9.5f, colours::faint);
 
         // Center Liquid Glass voice profile & Auto-Tune key capsule
         auto profPill = Rectangle<float>(416.0f, 23.0f, 334.0f, 34.0f);
