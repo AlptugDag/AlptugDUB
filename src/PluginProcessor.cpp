@@ -36,20 +36,20 @@ AgeShape ageShape(float age) {
 const std::vector<AlptugDUBProcessor::Character>& AlptugDUBProcessor::characters() {
     // targetF0: the character's speaking pitch. formant: its vocal tract, in semitones above an adult man's.
     static const std::vector<Character> list = {
-        //  id          Türkçe          English        F0   pitch tract   age  nasal body  air
-        {"natural",   "Doğal",        "Natural",       0,   0,  0.0f,    0, 0.00f, 0.0f,  0.0f},
-        {"bigman",    "İri adam",     "Big man",      88,  -4, -2.5f,    3, 0.00f, 2.0f,  0.5f},
-        {"giant",     "Dev",          "Giant",        70,  -8, -5.0f,    6, 0.00f, 3.0f,  2.5f},
-        {"monster",   "Canavar",      "Monster",      62, -10, -4.0f,    9, 0.00f, 3.0f,  3.0f},
-        {"man",       "Erkek",        "Man",         115,  -7,  0.0f,    0, 0.00f, 1.0f,  0.5f},
-        {"woman",     "Kadın",        "Woman",       205,   7,  2.2f,    0, 0.00f, 0.0f,  0.5f},
-        {"girl",      "Küçük kız",    "Little girl", 300,   9,  4.5f,  -40, 0.03f,-2.0f,  0.5f},
-        {"boy",       "Küçük oğlan",  "Little boy",  265,   7,  4.0f,  -35, 0.00f,-1.5f,  0.5f},
-        {"oldman",    "Yaşlı adam",   "Old man",     125,  -1,  0.0f,   18, 0.05f, 0.0f, -1.0f},
-        {"oldwoman",  "Yaşlı kadın",  "Old woman",   185,   4,  2.0f,   18, 0.07f, 0.0f, -1.0f},
-        {"witch",     "Cadı",         "Witch",       235,   5,  2.6f,   15, 0.30f,-2.0f,  0.5f},
-        {"dwarf",     "Cüce",         "Dwarf",       120,  -2,  2.5f,    3, 0.10f, 1.0f,  0.0f},
-        {"goblin",    "Goblin",       "Goblin",      270,   6,  3.5f,    3, 0.28f,-2.0f,  0.0f},
+        //  id          Türkçe          English        F0    pitch   tract    age  nasal  body   air    regen  glottal  growl  breath
+        {"natural",   "Doğal",        "Natural",       0,    0.0f,  0.0f,    0, 0.00f,  0.0f,  0.0f, 0.00f,  0.00f, 0.00f, 0.00f},
+        {"bigman",    "İri adam",     "Big man",      86,   -4.5f, -2.8f,    3, 0.00f,  2.0f,  0.5f, 0.78f, -0.55f, 0.18f, 0.06f},
+        {"giant",     "Dev",          "Giant",        66,   -8.5f, -4.8f,    6, 0.00f,  3.0f,  2.5f, 0.85f, -0.80f, 0.38f, 0.10f},
+        {"monster",   "Canavar",      "Monster",      58,  -10.5f, -4.2f,    9, 0.00f,  3.0f,  3.0f, 0.90f, -0.90f, 0.68f, 0.22f},
+        {"man",       "Erkek",        "Man",         112,   -6.0f, -0.8f,    0, 0.00f,  1.0f,  0.5f, 0.72f, -0.30f, 0.06f, 0.05f},
+        {"woman",     "Kadın",        "Woman",       210,    7.0f,  2.6f,    0, 0.00f,  0.0f,  0.5f, 0.82f,  0.55f, 0.00f, 0.18f},
+        {"girl",      "Küçük kız",    "Little girl", 295,    9.0f,  4.6f,  -40, 0.03f, -2.0f,  0.5f, 0.86f,  0.75f, 0.00f, 0.22f},
+        {"boy",       "Küçük oğlan",  "Little boy",  255,    7.0f,  3.8f,  -35, 0.00f, -1.5f,  0.5f, 0.82f,  0.45f, 0.00f, 0.14f},
+        {"oldman",    "Yaşlı adam",   "Old man",     122,   -1.5f, -0.6f,   18, 0.05f,  0.0f, -1.0f, 0.78f, -0.25f, 0.28f, 0.24f},
+        {"oldwoman",  "Yaşlı kadın",  "Old woman",   182,    3.5f,  1.8f,   18, 0.07f,  0.0f, -1.0f, 0.80f,  0.30f, 0.18f, 0.28f},
+        {"witch",     "Cadı",         "Witch",       230,    5.0f,  2.4f,   15, 0.30f, -2.0f,  0.5f, 0.85f, -0.45f, 0.42f, 0.25f},
+        {"dwarf",     "Cüce",         "Dwarf",       118,   -2.0f,  2.2f,    3, 0.10f,  1.0f,  0.0f, 0.80f, -0.65f, 0.30f, 0.08f},
+        {"goblin",    "Goblin",       "Goblin",      265,    6.0f,  3.4f,    3, 0.28f, -2.0f,  0.0f, 0.86f, -0.50f, 0.48f, 0.18f},
     };
     return list;
 }
@@ -59,6 +59,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout AlptugDUBProcessor::layout()
     AudioProcessorValueTreeState::ParameterLayout l;
     auto st = [](float v, int) { return (v > 0.004f ? "+" : "") + String(v, 1) + " st"; };
     auto pct = [](float v, int) { return String(roundToInt(v * 100)) + "%"; };
+    auto signedPct = [](float v, int) {
+        const int p = roundToInt(v * 100);
+        return (p > 0 ? "+" : "") + String(p) + "%";
+    };
     auto db = [](float v, int) { return (v > 0.04f ? "+" : "") + String(v, 1) + " dB"; };
     auto years = [](float v, int) { return v > 0.5f ? "+" + String(roundToInt(v)) : String(roundToInt(v)); };
     auto addFloat = [&](const char* id, const char* name, NormalisableRange<float> r, float def, std::function<String(float, int)> text) {
@@ -72,6 +76,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout AlptugDUBProcessor::layout()
     addFloat(ids::presence, "Presence", {-6, 6, 0.1f}, 0.0f, db);
     addFloat(ids::body, "Body", {-6, 6, 0.1f}, 0.0f, db);
     addFloat(ids::air, "Air", {-6, 6, 0.1f}, 0.0f, db);
+    addFloat(ids::regen, "Regen", {0, 1, 0.01f}, 0.75f, pct);
+    addFloat(ids::glottal, "Glottal", {-1, 1, 0.01f}, 0.0f, signedPct);
+    addFloat(ids::growl, "Growl", {0, 1, 0.01f}, 0.0f, pct);
+    addFloat(ids::breath, "Breath", {0, 1, 0.01f}, 0.10f, pct);
+    addFloat(ids::autotune, "Auto-Tune", {0, 1, 0.01f}, 0.0f, pct);
     addFloat(ids::mix, "Mix", {0, 1, 0.01f}, 1.0f, pct);
     addFloat(ids::output, "Output", {-12, 12, 0.1f}, 0.0f, db);
     l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::loudness, 1}, "Keep loudness", true));
@@ -81,6 +90,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AlptugDUBProcessor::layout()
     l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoTract, 1}, "Natural tract motion", true));
     l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoResponse, 1}, "Dynamic response", true));
     l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::autoSteady, 1}, "Steady pitch", false));
+    l.add(std::make_unique<AudioParameterBool>(ParameterID{ids::consonantGuard, 1}, "Consonant guard", true));
     StringArray names;
     for (auto& c : characters()) names.add(c.nameEn);
     l.add(std::make_unique<AudioParameterChoice>(ParameterID{ids::character, 1}, "Character", names, 0));
@@ -108,28 +118,34 @@ void AlptugDUBProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     const int ch = std::max(1, getTotalNumOutputChannels());
     yin.prepare(sampleRate);
     neural.prepare(sampleRate);
+    autoTune.prepare(sampleRate);
     spectral.prepare(sampleRate, ch, samplesPerBlock);
+    regenerator.prepare(sampleRate, ch, samplesPerBlock, spectral.latencySamples(), neural.delaySamples(), neural.spacing());
     profile.prepare(sampleRate);
     hop = std::max(1, (int) std::lround(sampleRate * 0.005));
-    latency = spectral.latencySamples();
+    latency = regenerator.latencySamples();
     setLatencySamples(latency);
 
     juce::dsp::ProcessSpec spec{sampleRate, (juce::uint32) samplesPerBlock, (juce::uint32) ch};
     dryDelay.prepare(spec);
     dry.setSize(ch, samplesPerBlock);
+    rawDry.setSize(ch, samplesPerBlock);
     mono.setSize(1, samplesPerBlock);
     for (auto* f : {&bodyEq, &airEq, &presenceEq, &nasalPeak, &nasalLow}) {
         f->prepare(spec);
         f->reset();
     }
     lastBody = lastAir = lastNasal = lastPresence = 1000;
-    for (auto* s : {&pitchSm, &formantSm, &mixSm, &gainSm}) s->reset(sampleRate, 0.05);
+    for (auto* s : {&pitchSm, &formantSm, &regenSm, &glottalSm, &growlSm, &breathSm, &autotuneSm, &mixSm, &gainSm})
+        s->reset(sampleRate, 0.05);
     reset();
 }
 
 void AlptugDUBProcessor::reset() {
     if (mono.getNumSamples() == 0) return; // not prepared yet
     spectral.reset();
+    regenerator.reset();
+    autoTune.reset();
     yin.reset();
     neural.reset();
     hopCount = 0;
@@ -138,12 +154,19 @@ void AlptugDUBProcessor::reset() {
     levelDry = levelWet = 0;
     levelGain = 1;
     limitGain = 1;
-    melodyFast = melodySlow = fastF0 = 0;
+    melodyFast = melodySlow = fastF0 = neuralF0 = neuralConf = fastConf = 0;
     effortFast = 0;
     effortSlow = 1e-4f;
     lastPresenceDyn = 0;
+    for (auto& w : waveHistory) w.store(0.0f);
+    waveWritePos.store(0);
     pitchSm.setCurrentAndTargetValue(param(ids::pitch));
     formantSm.setCurrentAndTargetValue(param(ids::formant));
+    regenSm.setCurrentAndTargetValue(param(ids::regen));
+    glottalSm.setCurrentAndTargetValue(param(ids::glottal));
+    growlSm.setCurrentAndTargetValue(param(ids::growl));
+    breathSm.setCurrentAndTargetValue(param(ids::breath));
+    autotuneSm.setCurrentAndTargetValue(param(ids::autotune));
     mixSm.setCurrentAndTargetValue(param(ids::mix));
     gainSm.setCurrentAndTargetValue(juce::Decibels::decibelsToGain(param(ids::output)));
 }
@@ -205,6 +228,10 @@ void AlptugDUBProcessor::applyCharacter(int index) {
     set(ids::nasal, c.nasal);
     set(ids::body, c.body);
     set(ids::air, c.air);
+    set(ids::regen, c.regen);
+    set(ids::glottal, c.glottal);
+    set(ids::growl, c.growl);
+    set(ids::breath, c.breath);
     set(ids::character, (float) index);
 }
 
@@ -237,11 +264,16 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     if (n == 0 || ch == 0) return;
     if (dry.getNumSamples() < n || dry.getNumChannels() < ch) {
         dry.setSize(ch, n, false, false, true); // only if the host breaks its promised block size
+        rawDry.setSize(ch, n, false, false, true);
         mono.setSize(1, n, false, false, true);
     }
 
     // ---- listen: the neural pitch model (AI) or the fast tracker, for the voice profile ----
-    if (resetProfile.exchange(false)) profile.reset();
+    if (resetProfile.exchange(false)) {
+        profile.reset();
+        regenerator.resetVoiceProfile();
+        autoTune.resetProfile();
+    }
     const bool useNeural = param(ids::ai) > 0.5f;
     float inPeak = 0;
     bool voicedNow = false;
@@ -256,11 +288,12 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         if (++hopCount >= hop) {
             hopCount = 0;
             const auto e = yin.estimate();
+            regenerator.pushYinEstimate(e);
             if (e.voiced()) profile.addBreath(e.aperiodicity);
             voicedNow = e.voiced() && e.rms > 0.003f;
             fastF0 = voicedNow ? (float) (sr / e.period) : 0.0f;
+            fastConf = e.voiced() ? juce::jlimit(0.0f, 1.0f, 1.0f - e.aperiodicity / 0.40f) : 0.0f;
             if (fastF0 > 0) {
-                // the melody now (about 40 ms) and over the last second or so
                 const float lf = std::log(fastF0);
                 if (melodyFast <= 0 || melodySlow <= 0) melodyFast = melodySlow = lf;
                 melodyFast += (lf - melodyFast) * 0.12f;
@@ -273,9 +306,12 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         }
         if (useNeural && neural.push(s)) {
             const auto& e = neural.latest();
+            regenerator.pushNeuralEstimate(e);
             profile.addEstimate(e, neural.spacing());
-            liveF0.store(e.voiced() ? (float) (sr / e.period) : 0.0f);
-            liveConfidence.store(e.confidence);
+            neuralF0 = e.voiced() ? (float) (sr / e.period) : 0.0f;
+            neuralConf = e.confidence;
+            liveF0.store(neuralF0);
+            liveConfidence.store(neuralConf);
         }
     }
     {
@@ -293,18 +329,18 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     }
     inputLevel.store(inPeak);
 
-    // ---- dry copy, aligned with the processed signal ----
-    for (int c = 0; c < ch; ++c) dry.copyFrom(c, 0, buffer, c, 0, n);
+    // ---- raw dry copy (unshifted reference) + delayed dry copy (aligned with final output) ----
+    for (int c = 0; c < ch; ++c) {
+        rawDry.copyFrom(c, 0, buffer, c, 0, n);
+        dry.copyFrom(c, 0, buffer, c, 0, n);
+    }
     {
         juce::dsp::AudioBlock<float> b(dry.getArrayOfWritePointers(), (size_t) ch, (size_t) n);
         dryDelay.process(juce::dsp::ProcessContextReplacing<float>(b));
     }
 
-    // ---- the voice engine: pitch and formants shifted independently ----
+    // ---- the voice engine: adaptive Auto-Tune + spectral pitch shift + hybrid glottal regeneration ----
     const auto shape = ageShape(param(ids::age));
-    // Dynamics, all slow and smoothed (the shifter itself is never driven per pulse):
-    //  steady   the pitch contour is pulled a little toward its own average, so wobble calms down
-    //  tract    the vocal tract moves with the melody, as a real larynx does (at most +-2 st)
     float dynPitch = 0, dynFormant = 0;
     const bool voiceNow = melodyFast > 0 && melodySlow > 0 && fastF0 > 0;
     if (voiceNow && param(ids::autoSteady) > 0.5f)
@@ -313,29 +349,62 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         dynFormant = juce::jlimit(-2.0f, 2.0f, 0.1f * 12.0f * (melodyFast - std::log(summaryCopy.medianF0)) / std::log(2.0f));
     pitchSm.setTargetValue(param(ids::pitch) + shape.pitch + dynPitch);
     formantSm.setTargetValue(param(ids::formant) + shape.formant + dynFormant);
-    pitchSm.skip(n);
-    formantSm.skip(n);
-    const float p = pitchSm.getCurrentValue();
+    regenSm.setTargetValue(param(ids::regen));
+    glottalSm.setTargetValue(param(ids::glottal));
+    growlSm.setTargetValue(param(ids::growl));
+    breathSm.setTargetValue(param(ids::breath));
+    autotuneSm.setTargetValue(param(ids::autotune));
+    for (auto* sm : {&pitchSm, &formantSm, &regenSm, &glottalSm, &growlSm, &breathSm, &autotuneSm}) sm->skip(n);
+
+    const float basePitch = pitchSm.getCurrentValue();
+    const float tuneAmt = autotuneSm.getCurrentValue();
+    const float tuneF0 = fastF0 > 0.0f ? fastF0 : (useNeural ? neuralF0 : 0.0f);
+    const float tuneConf = useNeural ? std::max(neuralConf, fastConf * 0.85f) : fastConf;
+    const auto tuneRes = autoTune.update(tuneF0, tuneConf, basePitch, tuneAmt, summaryCopy.type, (float) n / (float) sr);
+    liveKey.store(tuneRes.key);
+    liveScale.store((int) tuneRes.scale);
+    liveTuneCents.store(tuneRes.correctionSemitones * 100.0f);
+
+    const float p = juce::jlimit(-20.0f, 20.0f, basePitch + tuneRes.correctionSemitones);
     float f = formantSm.getCurrentValue();
     if (param(ids::follow) > 0.5f) f += 0.25f * p;
-    spectral.set(p, f, summaryCopy.medianF0);
+
+    spectral.set(p, 0.0f, summaryCopy.medianF0);
     spectral.process(buffer.getArrayOfWritePointers(), n);
+
+    const float effortRatio = effortSlow > 1e-4f ? juce::jlimit(0.4f, 2.5f, effortFast / effortSlow) : 1.0f;
+    adub::HybridParams hp;
+    hp.pitchSemitones = p;
+    hp.formantSemitones = f;
+    hp.regen = regenSm.getCurrentValue();
+    hp.glottal = glottalSm.getCurrentValue();
+    hp.growl = growlSm.getCurrentValue();
+    hp.breath = breathSm.getCurrentValue();
+    hp.age = param(ids::age);
+    hp.nasal = param(ids::nasal);
+    hp.effort = effortRatio;
+    hp.speakerMedianF0 = summaryCopy.medianF0;
+    hp.characterIndex = juce::roundToInt(param(ids::character));
+    hp.consonantGuard = param(ids::consonantGuard) > 0.5f;
+    hp.steadyPitch = param(ids::autoSteady) > 0.5f;
+
+    regenerator.process(rawDry.getArrayOfReadPointers(), buffer.getArrayOfWritePointers(), n, hp, useNeural);
+    const auto st = regenerator.getStatus();
+    liveVoiced.store(st.voiced);
+    liveConsonant.store(st.consonant);
+    liveRegen.store(st.regen);
+
     juce::dsp::AudioBlock<float> wet(buffer);
 
     // ---- tone ----
-    // smart tone: a deeper voice gets the chest it would really have, a lighter one some air,
-    // and moving the formants down is balanced so the voice does not turn dull
     float bodyAuto = 0, airAuto = shape.air;
     if (param(ids::autoTone) > 0.5f) {
-        bodyAuto = juce::jlimit(-3.0f, 4.0f, -0.25f * p);
-        airAuto += juce::jlimit(-3.0f, 2.5f, 0.05f * p - 0.3f * f);
+        bodyAuto = juce::jlimit(-1.5f, 2.5f, -0.12f * p);
+        airAuto += juce::jlimit(-1.5f, 1.5f, 0.03f * p - 0.15f * f);
     }
-    // dynamic response: a voice gets brighter and more present as the speaker pushes, softer and warmer when they ease off
     float presenceDyn = 0;
-    if (param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f) {
-        const float effort = juce::jlimit(0.4f, 2.5f, effortFast / effortSlow);
-        presenceDyn = 2.5f * juce::jlimit(-1.0f, 1.0f, std::log2(effort));
-    }
+    if (param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f)
+        presenceDyn = 2.0f * juce::jlimit(-1.0f, 1.0f, std::log2(effortRatio));
     lastPresenceDyn += (presenceDyn - lastPresenceDyn) * 0.25f;
     updateFilters(bodyAuto, airAuto, lastPresenceDyn);
     if (lastNasal > 0.001f) {
@@ -357,7 +426,6 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             }
             levelDry += (d - levelDry) * k;
             levelWet += (w - levelWet) * k;
-            // only while both are really sounding: a silent wet path (the engine starting up) must not pump the gain
             const bool both = levelDry > 1e-7f && levelWet > levelDry * 0.05f;
             const float target = both ? juce::jlimit(0.25f, 2.0f, std::sqrt(levelDry / levelWet)) : levelGain;
             levelGain += (target - levelGain) * k * 0.5f;
@@ -368,25 +436,35 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     // ---- mix and output ----
     mixSm.setTargetValue(param(ids::mix));
     gainSm.setTargetValue(juce::Decibels::decibelsToGain(param(ids::output)));
-    // A safety limiter at -0.3 dBFS closes the chain: it only acts on overs, catching them at once
-    // and letting go over 80 ms, linked across channels.
     const float ceiling = 0.966f, release = 1.0f - std::exp(-1.0f / (0.08f * (float) sr));
     float outPeak = 0;
+    float signedSum = 0;
     for (int i = 0; i < n; ++i) {
         const float mx = mixSm.getNextValue(), g = gainSm.getNextValue();
         float peak = 0;
+        float monoOut = 0;
         for (int c = 0; c < ch; ++c) {
             float v = (buffer.getSample(c, i) * mx + dry.getSample(c, i) * (1.0f - mx)) * g;
-            if (!std::isfinite(v)) v = 0.0f; // never pass a NaN or infinity to the host
+            if (!std::isfinite(v)) v = 0.0f;
             buffer.setSample(c, i, v);
             peak = std::max(peak, std::abs(v));
+            monoOut += v;
         }
+        monoOut /= (float) ch;
         const float need = peak * limitGain > ceiling ? ceiling / peak : 1.0f;
         limitGain = need < limitGain ? need : limitGain + (1.0f - limitGain) * release;
         for (int c = 0; c < ch; ++c) buffer.setSample(c, i, buffer.getSample(c, i) * limitGain);
         outPeak = std::max(outPeak, peak * limitGain);
+        signedSum += monoOut * limitGain;
     }
     outputLevel.store(outPeak);
+
+    // Push block summary (signed peak-weighted displacement) into 64-slot ring for the reactive UI wave
+    const float signedAvg = std::tanh(3.5f * (signedSum / (float) n));
+    const float waveSample = (outPeak > 0.002f ? (signedAvg >= 0 ? outPeak : -outPeak) : 0.0f);
+    const int wp = waveWritePos.load(std::memory_order_relaxed);
+    waveHistory[(size_t) (wp & 63)].store(waveSample, std::memory_order_relaxed);
+    waveWritePos.store(wp + 1, std::memory_order_release);
 }
 
 void AlptugDUBProcessor::getStateInformation(juce::MemoryBlock& destData) {

@@ -1,6 +1,8 @@
 // AlptugDUB by Alptuğ Dağ — the audio processor.
 #pragma once
 
+#include "dsp/AutoTune.h"
+#include "dsp/HybridRegenerator.h"
 #include "dsp/NeuralPitch.h"
 #include "dsp/SpectralShifter.h"
 #include "dsp/VoiceProfile.h"
@@ -8,6 +10,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
 
+#include <array>
 #include <atomic>
 
 namespace ids {
@@ -29,6 +32,12 @@ inline constexpr const char* autoTract = "autoTract";
 inline constexpr const char* autoResponse = "autoResponse";
 inline constexpr const char* autoSteady = "autoSteady";
 inline constexpr const char* character = "character";
+inline constexpr const char* regen = "regen";
+inline constexpr const char* glottal = "glottal";
+inline constexpr const char* growl = "growl";
+inline constexpr const char* breath = "breath";
+inline constexpr const char* consonantGuard = "consonantGuard";
+inline constexpr const char* autotune = "autotune";
 } // namespace ids
 
 class AlptugDUBProcessor : public juce::AudioProcessor, private juce::Timer {
@@ -48,7 +57,7 @@ public:
     const juce::String getName() const override { return "AlptugDUB"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.2; }
+    double getTailLengthSeconds() const override { return 0.35; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -65,6 +74,14 @@ public:
     std::atomic<float> inputLevel{0}, outputLevel{0}; // peak, linear
     std::atomic<float> liveF0{0};                     // Hz, 0 when unvoiced
     std::atomic<float> liveConfidence{0};             // the neural tracker's voicing probability
+    std::atomic<float> liveVoiced{0};                 // 0..1 hybrid engine voiced activity
+    std::atomic<float> liveConsonant{0};              // 0..1 consonant guard activity
+    std::atomic<float> liveRegen{0};                  // 0..1 active glottal regeneration
+    std::atomic<int> liveKey{0};                      // detected musical root key (0=C .. 11=B)
+    std::atomic<int> liveScale{2};                    // 0=Major, 1=Minor, 2=Chromatic
+    std::atomic<float> liveTuneCents{0};              // active Auto-Tune pitch offset in cents
+    std::array<std::atomic<float>, 64> waveHistory{}; // live vocal wave envelope/displacement ring
+    std::atomic<int> waveWritePos{0};
     adub::VoiceSummary voiceSummary() const;
     void resetVoiceProfile() { resetProfile.store(true); }
 
@@ -77,6 +94,7 @@ public:
         float pitch;    // semitones when relative (or before the voice is learned)
         float formant;  // semitones: vocal tract size
         float age, nasal, body, air;
+        float regen, glottal, growl, breath;
     };
     static const std::vector<Character>& characters();
     /** Applies a character (index into characters()); uses the learned voice when it is ready. */
@@ -89,6 +107,8 @@ private:
     float param(const char* id) const { return state.getRawParameterValue(id)->load(); }
 
     adub::SpectralShifter spectral;
+    adub::HybridRegenerator regenerator;
+    adub::AutoTune autoTune;
     adub::PitchTracker yin;
     adub::NeuralPitch neural;
     adub::VoiceProfile profile;
@@ -97,17 +117,18 @@ private:
     mutable juce::SpinLock profileLock;
     adub::VoiceSummary summaryCopy;
 
-    juce::AudioBuffer<float> dry, mono;
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay{1 << 17};
+    juce::AudioBuffer<float> dry, rawDry, mono;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay{1 << 18};
     using Eq = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
     Eq bodyEq, airEq, presenceEq, nasalPeak, nasalLow;
     float lastNasal = -1, lastBody = 1000, lastAir = 1000, lastPresence = 1000;
     // live voice dynamics (from the fast tracker, 5 ms): the speaker's melody now and over the last second,
     // and how hard they are speaking against their own average
-    float melodyFast = 0, melodySlow = 0, fastF0 = 0, effortFast = 0, effortSlow = 1e-4f, lastPresenceDyn = 0;
+    float melodyFast = 0, melodySlow = 0, fastF0 = 0, neuralF0 = 0, neuralConf = 0, fastConf = 0;
+    float effortFast = 0, effortSlow = 1e-4f, lastPresenceDyn = 0;
     float levelDry = 0, levelWet = 0, levelGain = 1; // keep level
     float limitGain = 1;                             // output safety limiter
-    juce::SmoothedValue<float> pitchSm, formantSm, mixSm, gainSm;
+    juce::SmoothedValue<float> pitchSm, formantSm, regenSm, glottalSm, growlSm, breathSm, autotuneSm, mixSm, gainSm;
     int latency = 0, hop = 240, hopCount = 0;
     double sr = 48000;
 };
