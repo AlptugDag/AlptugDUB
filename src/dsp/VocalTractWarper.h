@@ -18,7 +18,7 @@ class VocalTractWarper {
 public:
     void prepare(double sampleRate) {
         sr = std::max(8000.0, sampleRate);
-        fftSize = sr > 120000.0 ? 8192 : sr > 60000.0 ? 4096 : 2048;
+        fftSize = sr > 120000.0 ? 4096 : sr > 60000.0 ? 2048 : 1024;
         halfBins = fftSize / 2 + 1;
         binHz = (float) (sr / fftSize);
 
@@ -40,12 +40,12 @@ public:
         deltaMap.assign((size_t) halfBins, 0.0f);
         deltaTmp.assign((size_t) halfBins, 0.0f);
 
-        // Precompute log-frequency coordinates for spectral tilt regression (150 Hz .. 6000 Hz)
+        // Precompute log-frequency coordinates for spectral tilt regression (clamped outside 150..6500 Hz to prevent sub-bass blowup)
         logFreq.resize((size_t) halfBins);
         tiltLoBin = std::max(1, (int) std::floor(150.0 / binHz));
         tiltHiBin = std::min(halfBins - 1, (int) std::ceil(6000.0 / binHz));
         for (int k = 0; k < halfBins; ++k) {
-            const float f = std::max(40.0f, (float) k * binHz);
+            const float f = std::clamp((float) k * binHz, 150.0f, 6500.0f);
             logFreq[(size_t) k] = std::log2(f / 1000.0f);
         }
         lastFormantSt = 999.0f;
@@ -100,7 +100,7 @@ public:
                          float* outTiltEnv = nullptr) {
         const float guideF0 = f0 > 45.0f ? f0 : 150.0f;
         const int hiQ = std::max(12, std::min(fftSize / 16, (int) std::lround(0.42 * sr / std::max(60.0f, guideF0))));
-        const int maxQ = std::clamp((int) std::lround(0.00135 * sr), 12, hiQ);
+        const int maxQ = std::clamp((int) std::lround(0.00125 * sr), 12, hiQ);
         const int taperStart = std::max(4, (maxQ * 3) / 4);
 
         for (int k = 0; k < halfBins; ++k) {

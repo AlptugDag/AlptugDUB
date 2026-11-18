@@ -31,8 +31,24 @@ inline float typicalF0(VoiceType t) {
     }
 }
 
-inline VoiceType classify(float f0) {
+inline VoiceType classify(float f0, const std::array<float, 3>& formants = {}) {
     if (f0 <= 0) return VoiceType::Unknown;
+    const float fMean = (formants[0] > 0.0f && formants[1] > 0.0f && formants[2] > 0.0f)
+                            ? (formants[0] + formants[1] + formants[2]) / 3.0f
+                            : 0.0f;
+    // Adult male vocal tracts have mean F1..F3 ~1250-1450 Hz (< 1530 Hz), female ~1600-1850 Hz
+    if (fMean > 100.0f && fMean < 1530.0f) {
+        if (f0 < 102) return VoiceType::Bass;
+        if (f0 < 126) return VoiceType::Baritone;
+        return VoiceType::Tenor;
+    }
+    if (fMean >= 1530.0f) {
+        if (f0 < 145) return VoiceType::Tenor;
+        if (f0 < 198) return VoiceType::Alto;
+        if (f0 < 228) return VoiceType::MezzoSoprano;
+        if (f0 < 265) return VoiceType::Soprano;
+        return VoiceType::Child;
+    }
     if (f0 < 102) return VoiceType::Bass;
     if (f0 < 126) return VoiceType::Baritone;
     if (f0 < 162) return VoiceType::Tenor;
@@ -50,6 +66,17 @@ struct VoiceSummary {
     float seconds = 0;                         // voiced audio learned
     VoiceType type = VoiceType::Unknown;
     bool ready() const { return seconds >= 0.12f && medianF0 > 0; }
+    float tractSemitones() const {
+        if (formants[0] > 0.0f && formants[1] > 0.0f && formants[2] > 0.0f) {
+            const float fMean = (formants[0] + formants[1] + formants[2]) / 3.0f;
+            const float fmtTract = 12.0f * std::log2(std::clamp(fMean / 1380.0f, 0.78f, 1.45f)) * 0.65f;
+            const float f0Prior =
+                medianF0 > 130.0f ? std::clamp(2.2f * std::log2(medianF0 / 130.0f) / std::log2(225.0f / 130.0f), 0.0f, 3.8f) : 0.0f;
+            return std::clamp(0.85f * fmtTract + 0.15f * f0Prior, -1.8f, 4.2f);
+        }
+        if (medianF0 <= 125.0f) return 0.0f;
+        return std::clamp(2.2f * std::log2(medianF0 / 125.0f) / std::log2(225.0f / 125.0f), 0.0f, 4.0f);
+    }
 };
 
 class VoiceProfile {
@@ -120,16 +147,16 @@ public:
     VoiceSummary summary() const {
         VoiceSummary s;
         s.seconds = (float) (voicedSamples / sr);
-        if (total > 0) {
-            s.medianF0 = percentile(0.5f);
-            s.lowF0 = percentile(0.1f);
-            s.highF0 = percentile(0.9f);
-            s.type = classify(s.medianF0);
-        }
         if (formantN > 0.5f)
             for (int k = 0; k < 3; ++k) s.formants[(size_t) k] = formantAcc[(size_t) k] / formantN;
         if (formantN > 0.5f) s.brightness = centroidAcc / formantN;
         if (breathSeen) s.breathiness = std::clamp(breathAcc, 0.0f, 1.0f);
+        if (total > 0) {
+            s.medianF0 = percentile(0.5f);
+            s.lowF0 = percentile(0.1f);
+            s.highF0 = percentile(0.9f);
+            s.type = classify(s.medianF0, s.formants);
+        }
         return s;
     }
 

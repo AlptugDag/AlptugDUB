@@ -4,7 +4,6 @@
 #include "dsp/AutoTune.h"
 #include "dsp/HybridRegenerator.h"
 #include "dsp/NeuralPitch.h"
-#include "dsp/SpectralShifter.h"
 #include "dsp/VoiceProfile.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -110,7 +109,6 @@ private:
     void updateFilters(float bodyExtra, float airExtra, float presenceExtra);
     float param(const char* id) const { return state.getRawParameterValue(id)->load(); }
 
-    adub::SpectralShifter spectral;
     adub::HybridRegenerator regenerator;
     adub::AutoTune autoTune;
     adub::PitchTracker yin;

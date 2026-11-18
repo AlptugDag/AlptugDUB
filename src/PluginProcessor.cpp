@@ -5,8 +5,38 @@
 namespace {
 /** The speaker's vocal tract, as semitones above an adult man's, smoothly estimated from F0. */
 float speakerTract(float medianF0) {
-    if (medianF0 <= 115.0f) return 0.0f;
-    return juce::jlimit(0.0f, 4.2f, 2.4f * std::log2(medianF0 / 115.0f) / std::log2(225.0f / 115.0f));
+    if (medianF0 <= 125.0f) return 0.0f;
+    return juce::jlimit(0.0f, 4.0f, 2.2f * std::log2(medianF0 / 125.0f) / std::log2(225.0f / 125.0f));
+}
+
+/** Perceptually anchored character pitch & formant target for any speaker (prevents over-shifting). */
+std::pair<float, float> anchoredCharacterShift(const AlptugDUBProcessor::Character& c, int index, const adub::VoiceSummary& s,
+                                               float spkF0) {
+    float pitch = c.pitch;
+    float formant = c.formant;
+    if (index == 0 || c.targetF0 <= 0.0f || spkF0 <= 40.0f) return {pitch, formant};
+
+    const bool maleSpeaker = s.type != adub::VoiceType::Unknown ? (s.type <= adub::VoiceType::Tenor) : (spkF0 < 165.0f);
+    float effTarget = c.targetF0;
+    if (maleSpeaker && c.pitch > 3.0f && c.targetF0 < 255.0f) effTarget = 270.0f;
+
+    const float adaptivePitch = 12.0f * std::log2(effTarget / spkF0);
+    if (!maleSpeaker && c.pitch > 3.0f && c.targetF0 < 235.0f) {
+        pitch = juce::jlimit(-2.0f, 2.0f, 0.85f * adaptivePitch + 0.15f * c.pitch);
+    } else if (c.pitch < 0.0f) {
+        // Asymmetric cross-gender range lets a higher voice reach natural male pitch cleanly without crashing below 64 Hz
+        const float minP = std::max(c.pitch - 7.5f, 12.0f * std::log2(std::max(66.0f, c.targetF0 * 0.92f) / spkF0));
+        const float maxP = c.pitch + 3.0f;
+        pitch = juce::jlimit(std::min(minP, maxP), maxP, 0.72f * adaptivePitch + 0.28f * c.pitch);
+    } else {
+        const float minP = (maleSpeaker && c.pitch > 3.0f) ? std::max(4.0f, c.pitch - 2.0f) : c.pitch - 3.0f;
+        const float maxP = c.pitch + 3.5f;
+        pitch = juce::jlimit(minP, maxP, 0.65f * adaptivePitch + 0.35f * c.pitch);
+    }
+
+    const float spkTract = s.ready() ? s.tractSemitones() : speakerTract(spkF0);
+    formant = juce::jlimit(c.formant - 2.2f, c.formant + 2.0f, c.formant - spkTract);
+    return {pitch, formant};
 }
 
 /**
@@ -36,18 +66,18 @@ const std::vector<AlptugDUBProcessor::Character>& AlptugDUBProcessor::characters
     static const std::vector<Character> list = {
         //  id          Türkçe          English        F0    pitch   tract    age  nasal  body   air    regen  glottal  growl  breath
         {"natural",   "Doğal",        "Natural",       0,    0.0f,  0.0f,    0, 0.00f,  0.0f,  0.0f, 0.00f,  0.00f, 0.00f, 0.00f},
-        {"bigman",    "İri adam",     "Big man",      86,   -4.5f, -2.8f,    3, 0.00f,  2.0f,  0.5f, 0.78f, -0.55f, 0.18f, 0.06f},
-        {"giant",     "Dev",          "Giant",        66,   -8.5f, -4.8f,    6, 0.00f,  3.0f,  2.5f, 0.85f, -0.80f, 0.38f, 0.10f},
-        {"monster",   "Canavar",      "Monster",      58,  -10.5f, -4.2f,    9, 0.00f,  3.0f,  3.0f, 0.90f, -0.90f, 0.68f, 0.22f},
-        {"man",       "Erkek",        "Man",         112,   -6.0f, -0.8f,    0, 0.00f,  1.0f,  0.5f, 0.72f, -0.30f, 0.06f, 0.05f},
-        {"woman",     "Kadın",        "Woman",       210,    7.0f,  2.6f,    0, 0.00f,  0.0f,  0.5f, 0.82f,  0.55f, 0.00f, 0.18f},
-        {"girl",      "Küçük kız",    "Little girl", 295,    9.0f,  4.6f,  -40, 0.03f, -2.0f,  0.5f, 0.86f,  0.75f, 0.00f, 0.22f},
-        {"boy",       "Küçük oğlan",  "Little boy",  255,    7.0f,  3.8f,  -35, 0.00f, -1.5f,  0.5f, 0.82f,  0.45f, 0.00f, 0.14f},
-        {"oldman",    "Yaşlı adam",   "Old man",     122,   -1.5f, -0.6f,   18, 0.05f,  0.0f, -1.0f, 0.78f, -0.25f, 0.28f, 0.24f},
-        {"oldwoman",  "Yaşlı kadın",  "Old woman",   182,    3.5f,  1.8f,   18, 0.07f,  0.0f, -1.0f, 0.80f,  0.30f, 0.18f, 0.28f},
-        {"witch",     "Cadı",         "Witch",       230,    5.0f,  2.4f,   15, 0.30f, -2.0f,  0.5f, 0.85f, -0.45f, 0.42f, 0.25f},
-        {"dwarf",     "Cüce",         "Dwarf",       118,   -2.0f,  2.2f,    3, 0.10f,  1.0f,  0.0f, 0.80f, -0.65f, 0.30f, 0.08f},
-        {"goblin",    "Goblin",       "Goblin",      265,    6.0f,  3.4f,    3, 0.28f, -2.0f,  0.0f, 0.86f, -0.50f, 0.48f, 0.18f},
+        {"bigman",    "İri adam",     "Big man",      96,   -4.5f, -2.8f,    3, 0.00f,  2.0f,  0.5f, 0.92f, -0.55f, 0.18f, 0.05f},
+        {"giant",     "Dev",          "Giant",        76,   -7.5f, -4.5f,    6, 0.00f,  3.0f,  2.5f, 0.96f, -0.80f, 0.38f, 0.08f},
+        {"monster",   "Canavar",      "Monster",      66,   -9.5f, -4.2f,    9, 0.00f,  3.0f,  3.0f, 1.00f, -0.90f, 0.68f, 0.16f},
+        {"man",       "Erkek",        "Man",         115,   -3.4f, -0.8f,    0, 0.00f,  1.0f,  0.5f, 0.90f, -0.30f, 0.06f, 0.04f},
+        {"woman",     "Kadın",        "Woman",       215,    5.6f,  2.6f,    0, 0.00f,  0.0f,  0.5f, 0.95f,  0.55f, 0.00f, 0.14f},
+        {"girl",      "Küçük kız",    "Little girl", 295,    8.0f,  4.6f,  -40, 0.03f, -2.0f,  0.5f, 0.96f,  0.75f, 0.00f, 0.18f},
+        {"boy",       "Küçük oğlan",  "Little boy",  255,    6.5f,  3.8f,  -35, 0.00f, -1.5f,  0.5f, 0.94f,  0.45f, 0.00f, 0.12f},
+        {"oldman",    "Yaşlı adam",   "Old man",     124,   -2.2f, -0.6f,   18, 0.05f,  0.0f, -1.0f, 0.92f, -0.25f, 0.28f, 0.18f},
+        {"oldwoman",  "Yaşlı kadın",  "Old woman",   195,    3.8f,  1.8f,   18, 0.07f,  0.0f, -1.0f, 0.94f,  0.30f, 0.18f, 0.22f},
+        {"witch",     "Cadı",         "Witch",       235,    5.0f,  2.4f,   15, 0.30f, -2.0f,  0.5f, 0.96f, -0.45f, 0.42f, 0.20f},
+        {"dwarf",     "Cüce",         "Dwarf",       120,   -2.4f,  2.2f,    3, 0.10f,  1.0f,  0.0f, 0.92f, -0.65f, 0.30f, 0.06f},
+        {"goblin",    "Goblin",       "Goblin",      265,    6.0f,  3.4f,    3, 0.28f, -2.0f,  0.0f, 0.96f, -0.50f, 0.48f, 0.14f},
     };
     return list;
 }
@@ -74,7 +104,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout AlptugDUBProcessor::layout()
     addFloat(ids::presence, "Presence", {-6, 6, 0.1f}, 0.0f, db);
     addFloat(ids::body, "Body", {-6, 6, 0.1f}, 0.0f, db);
     addFloat(ids::air, "Air", {-6, 6, 0.1f}, 0.0f, db);
-    addFloat(ids::regen, "Regen", {0, 1, 0.01f}, 0.75f, pct);
+    addFloat(ids::regen, "Regen", {0, 1, 0.01f}, 1.0f, pct);
     addFloat(ids::glottal, "Glottal", {-1, 1, 0.01f}, 0.0f, signedPct);
     addFloat(ids::growl, "Growl", {0, 1, 0.01f}, 0.0f, pct);
     addFloat(ids::breath, "Breath", {0, 1, 0.01f}, 0.10f, pct);
@@ -127,8 +157,7 @@ void AlptugDUBProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     yin.prepare(sampleRate);
     neural.prepare(sampleRate);
     autoTune.prepare(sampleRate);
-    spectral.prepare(sampleRate, ch, samplesPerBlock);
-    regenerator.prepare(sampleRate, ch, samplesPerBlock, spectral.latencySamples(), neural.delaySamples(), neural.spacing());
+    regenerator.prepare(sampleRate, ch, samplesPerBlock);
     profile.prepare(sampleRate);
     hop = std::max(1, (int) std::lround(sampleRate * 0.005));
     latency = regenerator.latencySamples();
@@ -151,7 +180,6 @@ void AlptugDUBProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 
 void AlptugDUBProcessor::reset() {
     if (mono.getNumSamples() == 0) return; // not prepared yet
-    spectral.reset();
     regenerator.reset();
     autoTune.reset();
     yin.reset();
@@ -239,11 +267,7 @@ void AlptugDUBProcessor::applyCharacter(int index) {
     if (index < 0 || index >= (int) list.size()) return;
     const Character& c = list[(size_t) index];
     const auto s = voiceSummary();
-    float pitch = c.pitch, formant = c.formant;
-    if (c.targetF0 > 0 && s.ready()) {
-        pitch = 12.0f * std::log2(c.targetF0 / s.medianF0);
-        formant = c.formant - speakerTract(s.medianF0);
-    }
+    auto [pitch, formant] = anchoredCharacterShift(c, index, s, s.ready() ? s.medianF0 : 0.0f);
     // age moves pitch and tract by itself; take that out so the character lands where it should
     const auto shape = ageShape(c.age);
     pitch -= shape.pitch;
@@ -402,8 +426,9 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     if (param(ids::autoMatch) > 0.5f && charIdx > 0 && charIdx < (int) charList.size() && spkF0 > 40.0f && !userTookOver.load()) {
         const Character& curChar = charList[(size_t) charIdx];
         if (curChar.targetF0 > 0.0f) {
-            const float idealPitch = juce::jlimit(-18.0f, 18.0f, 12.0f * std::log2(curChar.targetF0 / spkF0) - shape.pitch);
-            const float idealFormant = juce::jlimit(-8.0f, 8.0f, curChar.formant - speakerTract(spkF0) - shape.formant);
+            const auto [idealPitchRaw, idealFormantRaw] = anchoredCharacterShift(curChar, charIdx, summaryCopy, spkF0);
+            const float idealPitch = juce::jlimit(-18.0f, 18.0f, idealPitchRaw - shape.pitch);
+            const float idealFormant = juce::jlimit(-8.0f, 8.0f, idealFormantRaw - shape.formant);
             const float autoAlpha = 1.0f - std::exp(-blockSec / 0.045f);
             activeAutoPitch += (idealPitch - activeAutoPitch) * autoAlpha;
             activeAutoFormant += (idealFormant - activeAutoFormant) * autoAlpha;
@@ -478,9 +503,6 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     const float p = juce::jlimit(-20.0f, 20.0f, basePitch + tuneRes.correctionSemitones);
     const float f = formantSm.getCurrentValue();
 
-    spectral.set(p, 0.0f, spkF0);
-    spectral.process(buffer.getArrayOfWritePointers(), n);
-
     adub::HybridParams hp;
     hp.pitchSemitones = p;
     hp.formantSemitones = f;
@@ -511,7 +533,7 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         airAuto += juce::jlimit(-1.5f, 1.5f, 0.03f * p - 0.15f * f);
     }
     float presenceDyn = 0;
-    if (param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f) presenceDyn = 2.0f * effortLog;
+    if (charIdx > 0 && param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f) presenceDyn = 2.0f * effortLog;
     lastPresenceDyn += (presenceDyn - lastPresenceDyn) * 0.25f;
     updateFilters(bodyAuto, airAuto, lastPresenceDyn);
     if (lastNasal > 0.001f) {
