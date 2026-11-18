@@ -3,12 +3,10 @@
 #include "PluginEditor.h"
 
 namespace {
-/** The speaker's vocal tract, as semitones above an adult man's, guessed from the middle pitch. */
+/** The speaker's vocal tract, as semitones above an adult man's, smoothly estimated from F0. */
 float speakerTract(float medianF0) {
-    if (medianF0 <= 0) return 0.0f;
-    if (medianF0 < 165) return 0.0f;
-    if (medianF0 < 255) return 2.2f;
-    return 4.0f;
+    if (medianF0 <= 115.0f) return 0.0f;
+    return juce::jlimit(0.0f, 4.2f, 2.4f * std::log2(medianF0 / 115.0f) / std::log2(225.0f / 115.0f));
 }
 
 /**
@@ -102,10 +100,20 @@ AlptugDUBProcessor::AlptugDUBProcessor()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       state(*this, nullptr, "AlptugDUB", layout()) {
-    startTimerHz(2);
+    state.addParameterListener(ids::pitch, this);
+    state.addParameterListener(ids::formant, this);
+    state.addParameterListener(ids::follow, this);
+    state.addParameterListener(ids::autoMatch, this);
+    startTimerHz(15);
 }
 
-AlptugDUBProcessor::~AlptugDUBProcessor() { stopTimer(); }
+AlptugDUBProcessor::~AlptugDUBProcessor() {
+    stopTimer();
+    state.removeParameterListener(ids::pitch, this);
+    state.removeParameterListener(ids::formant, this);
+    state.removeParameterListener(ids::follow, this);
+    state.removeParameterListener(ids::autoMatch, this);
+}
 
 bool AlptugDUBProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const {
     const auto out = layouts.getMainOutputChannelSet();
@@ -158,6 +166,14 @@ void AlptugDUBProcessor::reset() {
     effortFast = 0;
     effortSlow = 1e-4f;
     lastPresenceDyn = 0;
+    fastLogF0 = 0;
+    voicedHopCount = 0;
+    activeAutoPitch = param(ids::pitch);
+    activeAutoFormant = param(ids::formant);
+    lastLinkedPitch = activeAutoPitch;
+    lastAutoSetPitch = activeAutoPitch;
+    lastAutoSetFormant = activeAutoFormant;
+    hasPendingAuto.store(false);
     for (auto& w : waveHistory) w.store(0.0f);
     waveWritePos.store(0);
     pitchSm.setCurrentAndTargetValue(param(ids::pitch));
@@ -201,6 +217,23 @@ adub::VoiceSummary AlptugDUBProcessor::voiceSummary() const {
     return summaryCopy;
 }
 
+void AlptugDUBProcessor::parameterChanged(const juce::String& id, float newValue) {
+    if (id == ids::autoMatch) {
+        if (newValue > 0.5f) userTookOver.store(false);
+        return;
+    }
+    if (id == ids::follow) {
+        if (newValue > 0.5f && std::abs(param(ids::formant)) < 0.05f && std::abs(param(ids::pitch)) > 0.1f)
+            lastLinkedPitch = 0.0f;
+        else
+            lastLinkedPitch = param(ids::pitch);
+        return;
+    }
+    if (suppressLink.load(std::memory_order_relaxed)) return;
+    if (id == ids::pitch && std::abs(newValue - lastAutoSetPitch) > 0.15f) userTookOver.store(true);
+    if (id == ids::formant && std::abs(newValue - lastAutoSetFormant) > 0.15f) userTookOver.store(true);
+}
+
 void AlptugDUBProcessor::applyCharacter(int index) {
     const auto& list = characters();
     if (index < 0 || index >= (int) list.size()) return;
@@ -216,14 +249,21 @@ void AlptugDUBProcessor::applyCharacter(int index) {
     pitch -= shape.pitch;
     formant -= shape.formant;
     if (index == 0) pitch = formant = 0;
+
+    const float clampedP = juce::jlimit(-18.0f, 18.0f, pitch);
+    const float clampedF = juce::jlimit(-8.0f, 8.0f, formant);
+
+    suppressLink.store(true);
     auto set = [&](const char* id, float v) {
         if (auto* p = state.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v));
     };
-    set(ids::pitch, juce::jlimit(-18.0f, 18.0f, pitch));
-    set(ids::formant, juce::jlimit(-8.0f, 8.0f, formant));
-    autoPitch = param(ids::pitch);
-    autoFormant = param(ids::formant);
-    set(ids::follow, 0.0f);
+    userTookOver.store(false);
+    hasPendingAuto.store(false);
+    lastAutoSetPitch = clampedP;
+    lastAutoSetFormant = clampedF;
+    lastLinkedPitch = clampedP;
+    set(ids::pitch, clampedP);
+    set(ids::formant, clampedF);
     set(ids::age, c.age);
     set(ids::nasal, c.nasal);
     set(ids::body, c.body);
@@ -233,29 +273,28 @@ void AlptugDUBProcessor::applyCharacter(int index) {
     set(ids::growl, c.growl);
     set(ids::breath, c.breath);
     set(ids::character, (float) index);
+    suppressLink.store(false);
 }
 
 void AlptugDUBProcessor::timerCallback() {
-    // Auto-match: while the voice is being learned (or changes), keep the chosen character on its
-    // target pitch. Moving the knob by hand takes over until the next character is picked.
-    if (param(ids::autoMatch) < 0.5f) return;
+    // Only sync Auto-Match parameters back onto APVTS when an editor UI is open (keeps headless auval strict)
+    if (getActiveEditor() == nullptr) return;
+    if (!hasPendingAuto.exchange(false)) return;
+    if (param(ids::autoMatch) < 0.5f || userTookOver.load()) return;
     const int index = juce::roundToInt(param(ids::character));
-    const auto& list = characters();
-    if (index <= 0 || index >= (int) list.size()) return;
-    const Character& c = list[(size_t) index];
-    const auto s = voiceSummary();
-    if (c.targetF0 <= 0 || !s.ready()) return;
-    if (std::abs(param(ids::pitch) - autoPitch) > 0.02f || std::abs(param(ids::formant) - autoFormant) > 0.02f) return; // taken over
-    const auto shape = ageShape(c.age);
-    const float pitch = juce::jlimit(-18.0f, 18.0f, 12.0f * std::log2(c.targetF0 / s.medianF0) - shape.pitch);
-    const float formant = juce::jlimit(-8.0f, 8.0f, c.formant - speakerTract(s.medianF0) - shape.formant);
-    auto set = [&](const char* id, float v) {
-        if (auto* p = state.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v));
-    };
-    if (std::abs(pitch - autoPitch) > 0.2f) set(ids::pitch, pitch);
-    if (std::abs(formant - autoFormant) > 0.2f) set(ids::formant, formant);
-    autoPitch = param(ids::pitch);
-    autoFormant = param(ids::formant);
+    if (index <= 0 || index >= (int) characters().size()) return;
+
+    const float np = pendingAutoPitch.load();
+    const float nf = pendingAutoFormant.load();
+    if (std::abs(np - param(ids::pitch)) > 0.15f || std::abs(nf - param(ids::formant)) > 0.15f) {
+        suppressLink.store(true);
+        lastAutoSetPitch = np;
+        lastAutoSetFormant = nf;
+        lastLinkedPitch = np;
+        if (auto* pp = state.getParameter(ids::pitch)) pp->setValueNotifyingHost(pp->convertTo0to1(np));
+        if (auto* fp = state.getParameter(ids::formant)) fp->setValueNotifyingHost(fp->convertTo0to1(nf));
+        suppressLink.store(false);
+    }
 }
 
 void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) {
@@ -273,6 +312,11 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         profile.reset();
         regenerator.resetVoiceProfile();
         autoTune.resetProfile();
+        fastLogF0 = 0.0f;
+        voicedHopCount = 0;
+        melodyFast = melodySlow = 0.0f;
+        userTookOver.store(false);
+        hasPendingAuto.store(false);
     }
     const bool useNeural = param(ids::ai) > 0.5f;
     float inPeak = 0;
@@ -292,16 +336,22 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             if (e.voiced()) profile.addBreath(e.aperiodicity);
             voicedNow = e.voiced() && e.rms > 0.003f;
             fastF0 = voicedNow ? (float) (sr / e.period) : 0.0f;
-            fastConf = e.voiced() ? juce::jlimit(0.0f, 1.0f, 1.0f - e.aperiodicity / 0.40f) : 0.0f;
-            if (fastF0 > 0) {
+            fastConf = e.confidence > 0.0f ? e.confidence : (e.voiced() ? juce::jlimit(0.0f, 1.0f, 1.0f - e.aperiodicity / 0.45f) : 0.0f);
+            if (fastF0 > 45.0f && fastF0 < 850.0f) {
                 const float lf = std::log(fastF0);
                 if (melodyFast <= 0 || melodySlow <= 0) melodyFast = melodySlow = lf;
-                melodyFast += (lf - melodyFast) * 0.12f;
+                melodyFast += (lf - melodyFast) * 0.14f;
                 melodySlow += (lf - melodySlow) * 0.008f;
+                ++voicedHopCount;
+                if (voicedHopCount == 1 || fastLogF0 <= 0.0f) fastLogF0 = lf;
+                else {
+                    const float alpha = voicedHopCount <= 16 ? 0.25f : 0.015f;
+                    fastLogF0 += (lf - fastLogF0) * alpha;
+                }
             }
             if (!useNeural) {
                 profile.addEstimate(e, hop);
-                liveF0.store(voicedNow ? (float) (sr / e.period) : 0.0f);
+                liveF0.store(fastF0);
             }
         }
         if (useNeural && neural.push(s)) {
@@ -310,15 +360,16 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
             profile.addEstimate(e, neural.spacing());
             neuralF0 = e.voiced() ? (float) (sr / e.period) : 0.0f;
             neuralConf = e.confidence;
-            liveF0.store(neuralF0);
+            liveF0.store(neuralF0 > 0.0f ? neuralF0 : fastF0);
             liveConfidence.store(neuralConf);
         }
     }
+    const float blockSec = (float) n / (float) sr;
     {
         // how hard the speaker is speaking: block loudness against their own average (voiced only)
         float e2 = 0;
         for (int i = 0; i < n; ++i) e2 += m[i] * m[i];
-        const float rmsNow = std::sqrt(e2 / (float) n), blockSec = (float) n / (float) sr;
+        const float rmsNow = std::sqrt(e2 / (float) n);
         effortFast += (rmsNow - effortFast) * (1.0f - std::exp(-blockSec / 0.06f));
         if (fastF0 > 0 && rmsNow > 0.003f) effortSlow += (rmsNow - effortSlow) * (1.0f - std::exp(-blockSec / 2.0f));
     }
@@ -339,40 +390,97 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         dryDelay.process(juce::dsp::ProcessContextReplacing<float>(b));
     }
 
-    // ---- the voice engine: adaptive Auto-Tune + spectral pitch shift + hybrid glottal regeneration ----
+    // ---- continuous real-time Auto-Match (converges within ~50-120 ms, even without UI timer) ----
     const auto shape = ageShape(param(ids::age));
-    float dynPitch = 0, dynFormant = 0;
+    const int charIdx = juce::roundToInt(param(ids::character));
+    const auto& charList = characters();
+    const float fastMed = (voicedHopCount >= 6 && fastLogF0 > 0.0f) ? std::exp(fastLogF0) : 0.0f;
+    const float spkF0 = summaryCopy.ready() ? summaryCopy.medianF0 : fastMed;
+
+    float basePitchIn = param(ids::pitch);
+    float baseFormantIn = param(ids::formant);
+    if (param(ids::autoMatch) > 0.5f && charIdx > 0 && charIdx < (int) charList.size() && spkF0 > 40.0f && !userTookOver.load()) {
+        const Character& curChar = charList[(size_t) charIdx];
+        if (curChar.targetF0 > 0.0f) {
+            const float idealPitch = juce::jlimit(-18.0f, 18.0f, 12.0f * std::log2(curChar.targetF0 / spkF0) - shape.pitch);
+            const float idealFormant = juce::jlimit(-8.0f, 8.0f, curChar.formant - speakerTract(spkF0) - shape.formant);
+            const float autoAlpha = 1.0f - std::exp(-blockSec / 0.045f);
+            activeAutoPitch += (idealPitch - activeAutoPitch) * autoAlpha;
+            activeAutoFormant += (idealFormant - activeAutoFormant) * autoAlpha;
+            basePitchIn = activeAutoPitch;
+            baseFormantIn = activeAutoFormant;
+            pendingAutoPitch.store(activeAutoPitch);
+            pendingAutoFormant.store(activeAutoFormant);
+            hasPendingAuto.store(true);
+        }
+    } else {
+        activeAutoPitch = basePitchIn;
+        activeAutoFormant = baseFormantIn;
+    }
+
+    // ---- dynamic prosody, vocal effort -> glottal press, jaw-opening formants & subharmonic/breath curves ----
+    const float effortRatio = effortSlow > 1e-4f ? juce::jlimit(0.4f, 2.5f, effortFast / effortSlow) : 1.0f;
+    const float effortLog = effortSlow > 1e-4f ? juce::jlimit(-1.0f, 1.0f, std::log2(effortRatio)) : 0.0f;
+    const float excursionSt = (melodyFast > 0.0f && melodySlow > 0.0f) ? 12.0f * (melodyFast - melodySlow) / std::log(2.0f) : 0.0f;
     const bool voiceNow = melodyFast > 0 && melodySlow > 0 && fastF0 > 0;
-    if (voiceNow && param(ids::autoSteady) > 0.5f)
-        dynPitch = juce::jlimit(-1.2f, 1.2f, -0.45f * 12.0f * (melodyFast - melodySlow) / std::log(2.0f));
-    if (voiceNow && param(ids::autoTract) > 0.5f && summaryCopy.medianF0 > 0)
-        dynFormant = juce::jlimit(-2.0f, 2.0f, 0.1f * 12.0f * (melodyFast - std::log(summaryCopy.medianF0)) / std::log(2.0f));
-    pitchSm.setTargetValue(param(ids::pitch) + shape.pitch + dynPitch);
-    formantSm.setTargetValue(param(ids::formant) + shape.formant + dynFormant);
+
+    float dynPitch = 0.0f, dynFormant = 0.0f;
+    if (voiceNow) {
+        if (param(ids::autoSteady) > 0.5f) {
+            dynPitch = juce::jlimit(-1.5f, 1.5f, -0.45f * excursionSt);
+        } else if (charIdx == 5 || charIdx == 6 || charIdx == 7 || charIdx == 10 || charIdx == 12) {
+            // Expressive agile characters preserve and gently bloom natural speech inflection
+            dynPitch = juce::jlimit(-2.2f, 2.2f, 0.24f * excursionSt);
+        } else if (charIdx == 1 || charIdx == 2 || charIdx == 3) {
+            // Heavy resonant characters have natural vocal mass inertia
+            dynPitch = juce::jlimit(-1.5f, 1.5f, -0.18f * excursionSt);
+        }
+        if (param(ids::autoTract) > 0.5f) {
+            const float melShift = spkF0 > 40.0f ? 12.0f * (melodyFast - std::log(spkF0)) / std::log(2.0f) : excursionSt;
+            const float jawOpen = 0.45f * std::max(0.0f, effortLog);
+            dynFormant = juce::jlimit(-2.0f, 2.0f, 0.12f * melShift + jawOpen);
+        }
+    }
+
+    float glottalDyn = 0.0f, growlDyn = 0.0f, breathDyn = 0.0f;
+    if (param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f) {
+        glottalDyn = -0.20f * effortLog;
+        const bool allowAutoFry = (param(ids::growl) > 0.02f) || (charIdx >= 1 && charIdx <= 4) || (charIdx >= 8);
+        if (voiceNow && allowAutoFry)
+            growlDyn = 0.12f * std::max(0.0f, effortLog) + 0.14f * std::clamp(-excursionSt / 3.0f, 0.0f, 1.0f);
+        if (charIdx > 0 || param(ids::breath) > 0.01f)
+            breathDyn = 0.12f * std::clamp(-effortLog - 0.08f, 0.0f, 1.0f);
+    }
+
+    float linkedFormantOffset = 0.0f;
+    if (param(ids::follow) > 0.5f && getActiveEditor() == nullptr)
+        linkedFormantOffset = (basePitchIn - lastLinkedPitch) * 0.45f;
+
+    pitchSm.setTargetValue(basePitchIn + shape.pitch + dynPitch);
+    formantSm.setTargetValue(juce::jlimit(-8.0f, 8.0f, baseFormantIn + linkedFormantOffset) + shape.formant + dynFormant);
     regenSm.setTargetValue(param(ids::regen));
-    glottalSm.setTargetValue(param(ids::glottal));
-    growlSm.setTargetValue(param(ids::growl));
-    breathSm.setTargetValue(param(ids::breath));
+    glottalSm.setTargetValue(juce::jlimit(-1.0f, 1.0f, param(ids::glottal) + glottalDyn));
+    growlSm.setTargetValue(juce::jlimit(0.0f, 1.0f, param(ids::growl) + growlDyn));
+    breathSm.setTargetValue(juce::jlimit(0.0f, 1.0f, param(ids::breath) + breathDyn));
     autotuneSm.setTargetValue(param(ids::autotune));
     for (auto* sm : {&pitchSm, &formantSm, &regenSm, &glottalSm, &growlSm, &breathSm, &autotuneSm}) sm->skip(n);
 
+    // ---- the voice engine: adaptive Auto-Tune + spectral pitch shift + phase-locked regeneration ----
     const float basePitch = pitchSm.getCurrentValue();
     const float tuneAmt = autotuneSm.getCurrentValue();
     const float tuneF0 = fastF0 > 0.0f ? fastF0 : (useNeural ? neuralF0 : 0.0f);
     const float tuneConf = useNeural ? std::max(neuralConf, fastConf * 0.85f) : fastConf;
-    const auto tuneRes = autoTune.update(tuneF0, tuneConf, basePitch, tuneAmt, summaryCopy.type, (float) n / (float) sr);
+    const auto tuneRes = autoTune.update(tuneF0, tuneConf, basePitch, tuneAmt, summaryCopy.type, blockSec);
     liveKey.store(tuneRes.key);
     liveScale.store((int) tuneRes.scale);
     liveTuneCents.store(tuneRes.correctionSemitones * 100.0f);
 
     const float p = juce::jlimit(-20.0f, 20.0f, basePitch + tuneRes.correctionSemitones);
-    float f = formantSm.getCurrentValue();
-    if (param(ids::follow) > 0.5f) f += 0.25f * p;
+    const float f = formantSm.getCurrentValue();
 
-    spectral.set(p, 0.0f, summaryCopy.medianF0);
+    spectral.set(p, 0.0f, spkF0);
     spectral.process(buffer.getArrayOfWritePointers(), n);
 
-    const float effortRatio = effortSlow > 1e-4f ? juce::jlimit(0.4f, 2.5f, effortFast / effortSlow) : 1.0f;
     adub::HybridParams hp;
     hp.pitchSemitones = p;
     hp.formantSemitones = f;
@@ -383,8 +491,8 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     hp.age = param(ids::age);
     hp.nasal = param(ids::nasal);
     hp.effort = effortRatio;
-    hp.speakerMedianF0 = summaryCopy.medianF0;
-    hp.characterIndex = juce::roundToInt(param(ids::character));
+    hp.speakerMedianF0 = spkF0;
+    hp.characterIndex = charIdx;
     hp.consonantGuard = param(ids::consonantGuard) > 0.5f;
     hp.steadyPitch = param(ids::autoSteady) > 0.5f;
 
@@ -403,8 +511,7 @@ void AlptugDUBProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         airAuto += juce::jlimit(-1.5f, 1.5f, 0.03f * p - 0.15f * f);
     }
     float presenceDyn = 0;
-    if (param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f)
-        presenceDyn = 2.0f * juce::jlimit(-1.0f, 1.0f, std::log2(effortRatio));
+    if (param(ids::autoResponse) > 0.5f && effortSlow > 1e-4f) presenceDyn = 2.0f * effortLog;
     lastPresenceDyn += (presenceDyn - lastPresenceDyn) * 0.25f;
     updateFilters(bodyAuto, airAuto, lastPresenceDyn);
     if (lastNasal > 0.001f) {
@@ -472,8 +579,15 @@ void AlptugDUBProcessor::getStateInformation(juce::MemoryBlock& destData) {
 }
 
 void AlptugDUBProcessor::setStateInformation(const void* data, int sizeInBytes) {
-    if (auto xml = getXmlFromBinary(data, sizeInBytes))
-        if (xml->hasTagName(state.state.getType())) state.replaceState(juce::ValueTree::fromXml(*xml));
+    if (auto xml = getXmlFromBinary(data, sizeInBytes)) {
+        if (xml->hasTagName(state.state.getType())) {
+            suppressLink.store(true);
+            state.replaceState(juce::ValueTree::fromXml(*xml));
+            activeAutoPitch = lastAutoSetPitch = lastLinkedPitch = param(ids::pitch);
+            activeAutoFormant = lastAutoSetFormant = param(ids::formant);
+            suppressLink.store(false);
+        }
+    }
 }
 
 juce::AudioProcessorEditor* AlptugDUBProcessor::createEditor() { return new AlptugDUBEditor(*this); }

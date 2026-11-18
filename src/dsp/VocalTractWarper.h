@@ -99,7 +99,8 @@ public:
     void extractEnvelope(const float* mag, float f0, float* outFullEnv, float* outPureTractEnv = nullptr,
                          float* outTiltEnv = nullptr) {
         const float guideF0 = f0 > 45.0f ? f0 : 150.0f;
-        const int maxQ = std::max(10, std::min(fftSize / 6, (int) std::lround(sr / std::max(80.0, guideF0 * 1.15))));
+        const int hiQ = std::max(12, std::min(fftSize / 16, (int) std::lround(0.42 * sr / std::max(60.0f, guideF0))));
+        const int maxQ = std::clamp((int) std::lround(0.00135 * sr), 12, hiQ);
         const int taperStart = std::max(4, (maxQ * 3) / 4);
 
         for (int k = 0; k < halfBins; ++k) {
@@ -199,6 +200,32 @@ public:
             }
         } else {
             for (int k = 0; k < halfBins; ++k) outEnv[k] = std::exp(std::clamp(warpedLog[(size_t) k], -16.5f, 8.0f));
+        }
+    }
+
+    /**
+     * Converts a positive magnitude gain response `linearGain[0..halfBins-1]` into a causal
+     * minimum-phase complex frequency response `outFilter[0..halfBins-1]` via real cepstrum lifting.
+     */
+    void computeMinimumPhaseFilter(const float* linearGain, std::complex<float>* outFilter) {
+        for (int k = 0; k < halfBins; ++k) {
+            const float lg = std::log(std::clamp(linearGain[k], 1e-4f, 64.0f));
+            cepWork[(size_t) k] = {lg, 0.0f};
+            if (k > 0 && k < fftSize / 2) cepWork[(size_t) (fftSize - k)] = {lg, 0.0f};
+        }
+
+        fft(cepWork, true);
+
+        cepWork[0] = {cepWork[0].real(), 0.0f};
+        for (int q = 1; q < fftSize / 2; ++q) cepWork[(size_t) q] = {2.0f * cepWork[(size_t) q].real(), 0.0f};
+        cepWork[(size_t) (fftSize / 2)] = {cepWork[(size_t) (fftSize / 2)].real(), 0.0f};
+        for (int q = fftSize / 2 + 1; q < fftSize; ++q) cepWork[(size_t) q] = {0.0f, 0.0f};
+
+        fft(cepWork, false);
+
+        for (int k = 0; k < halfBins; ++k) {
+            const float re = std::clamp(cepWork[(size_t) k].real(), -10.0f, 6.0f);
+            outFilter[k] = std::polar(std::exp(re), cepWork[(size_t) k].imag());
         }
     }
 

@@ -91,19 +91,28 @@ public:
             running += d;
             diff[(size_t) tau] = running > 0 ? (float) (d * tau / running) : 1.0f;
         }
+        float minDiff = 1.0f;
+        int minTau = minLag;
+        for (int tau = minLag; tau <= maxLag; ++tau) {
+            if (diff[(size_t) tau] < minDiff) {
+                minDiff = diff[(size_t) tau];
+                minTau = tau;
+            }
+        }
         int best = -1;
         for (int tau = minLag; tau <= maxLag; ++tau) {
-            if (diff[(size_t) tau] < kThreshold) {
+            if (diff[(size_t) tau] < kThreshold && diff[(size_t) tau] <= minDiff + 0.08f) {
                 while (tau + 1 <= maxLag && diff[(size_t) tau + 1] < diff[(size_t) tau]) ++tau;
                 best = tau;
                 break;
             }
         }
+        if (best < 0 && minDiff < 0.32f) best = minTau;
         if (best < 0) {
             // no clear dip: report how periodic the best candidate was, as unvoiced
-            float m = 1.0f;
-            for (int tau = minLag; tau <= maxLag; ++tau) m = std::min(m, diff[(size_t) tau]);
-            e.aperiodicity = m;
+            e.aperiodicity = minDiff;
+            e.confidence = std::clamp(1.0f - e.aperiodicity / 0.45f, 0.0f, 1.0f);
+            e.candidate = (float) (minTau * decim);
             return e;
         }
         double tau = best;
@@ -113,6 +122,7 @@ public:
             if (std::abs(den) > 1e-12) tau = best + 0.5 * (a - c) / den;
         }
         e.aperiodicity = diff[(size_t) best];
+        e.confidence = std::clamp(1.0f - e.aperiodicity / 0.45f, 0.0f, 1.0f);
         e.period = (float) (tau * decim);
         return e;
     }
@@ -120,7 +130,7 @@ public:
     double sampleRate() const { return sr; }
 
 private:
-    static constexpr float kThreshold = 0.3f;
+    static constexpr float kThreshold = 0.22f;
 
     static int nextPow2(int n) {
         int p = 1;

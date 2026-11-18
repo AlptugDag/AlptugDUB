@@ -49,14 +49,14 @@ struct VoiceSummary {
     float breathiness = 0;                     // 0 clear .. 1 breathy
     float seconds = 0;                         // voiced audio learned
     VoiceType type = VoiceType::Unknown;
-    bool ready() const { return seconds >= 2.0f && medianF0 > 0; }
+    bool ready() const { return seconds >= 0.12f && medianF0 > 0; }
 };
 
 class VoiceProfile {
 public:
     void prepare(double sampleRate) {
         sr = sampleRate;
-        frame = sampleRate > 60000 ? 4096 : 2048;
+        frame = sampleRate > 60000 ? 2048 : 1024;
         buf.assign((size_t) frame, 0.0f);
         fill = 0;
         hannW.resize((size_t) frame);

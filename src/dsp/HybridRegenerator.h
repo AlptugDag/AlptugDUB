@@ -479,16 +479,22 @@ private:
 };
 
 /**
- * Sample-accurate hybrid voice regeneration engine:
- *  - Aligns dry audio, spectral pitch-shifted audio, and pitch tracker timelines to a single clock
- *  - Performs true cepstral source-filter separation and non-linear F1/F2/F3/F4 vocal tract warping
- *  - Synthesizes fresh band-limited LF glottal harmonics, subharmonics, and pitch-synchronous breath
- *  - Preserves unvoiced sibilants and plosive consonants unshifted via multi-band Consonant Guard
+ * Sample-aligned, phase-locked hybrid voice regeneration engine:
+ *  - Low-latency alignment with Signalsmith Stretch (zero dry voice bleed below 3.5 kHz)
+ *  - Phase-locked analytic SVF fundamental follower driving:
+ *      * band-limited LF glottal harmonics (Zero beating, zero phase cancellation)
+ *      * zero-crossing continuous F0/2 & F0/3 subharmonics
+ *      * upper-harmonic asymmetric exciter (> 2.2 kHz)
+ *      * syllable-gated pitch-synchronous velvet breath
+ *  - Causal minimum-phase vocal tract warping + 24-Bark neural timbre shaper
+ *  - Strictly unvoiced >3.5 kHz Consonant Guard (s, ş, ç, t, k, f)
  */
 class HybridRegenerator {
 public:
     void prepare(double sampleRate, int numChannels, int maxBlock, int spectralLatencySamples, int64_t neuralDelaySamples,
                  int neuralSpacingSamples) {
+        (void) neuralDelaySamples;
+        (void) neuralSpacingSamples;
         sr = std::max(8000.0, sampleRate);
         ch = std::max(1, numChannels);
         warper.prepare(sr);
@@ -499,9 +505,8 @@ public:
         hop = std::max(64, fftSize / 8); // 8x overlap for artifact-free WOLA
         binHz = warper.hzPerBin();
 
-        neuralLatSamples = neuralDelaySamples + neuralSpacingSamples + 128;
-        coreAlignLat = std::max((int) neuralLatSamples, spectralLatencySamples);
-        spectralPad = std::max(0, coreAlignLat - spectralLatencySamples);
+        // Low-latency sample-exact alignment with Signalsmith Stretch
+        coreAlignLat = std::max(0, spectralLatencySamples);
         totalLatency = coreAlignLat + fftSize;
 
         // Precompute Hann windows and FFT twiddles
@@ -527,7 +532,6 @@ public:
         while (dSize < coreAlignLat + maxBlock + fftSize * 2) dSize <<= 1;
         delayMask = dSize - 1;
         dryAlignRing.assign((size_t) ch, std::vector<float>((size_t) dSize, 0.0f));
-        specAlignRing.assign((size_t) ch, std::vector<float>((size_t) dSize, 0.0f));
 
         // STFT input/output rings per channel
         stftMask = fftSize * 2 - 1; // 2*N power-of-2
@@ -535,37 +539,32 @@ public:
         specInRing.assign((size_t) ch, std::vector<float>((size_t) (fftSize * 2), 0.0f));
         outRing.assign((size_t) ch, std::vector<float>((size_t) (fftSize * 2), 0.0f));
         lfInRing.assign((size_t) (fftSize * 2), 0.0f);
+        upperInRing.assign((size_t) (fftSize * 2), 0.0f);
+        subInRing.assign((size_t) (fftSize * 2), 0.0f);
         breathInRing.assign((size_t) (fftSize * 2), 0.0f);
 
         // Spectral scratch buffers (allocated here, zero audio-thread allocation)
-        monoDryFrame.assign((size_t) fftSize, 0.0f);
         fftWork.assign((size_t) fftSize, {});
         lfWork.assign((size_t) fftSize, {});
+        upperWork.assign((size_t) fftSize, {});
+        subWork.assign((size_t) fftSize, {});
         breathWork.assign((size_t) fftSize, {});
         specChanWork.assign((size_t) fftSize, {});
         dryChanWork.assign((size_t) fftSize, {});
         outChanWork.assign((size_t) fftSize, {});
+        minPhaseFilter.assign((size_t) halfBins, {1.0f, 0.0f});
 
         magDryMono.assign((size_t) halfBins, 0.0f);
-        prevMagDryMono.assign((size_t) halfBins, 0.0f);
-        magSpecChan.assign((size_t) halfBins, 0.0f);
+        magSpecMono.assign((size_t) halfBins, 0.0f);
         envDryFull.assign((size_t) halfBins, 0.0f);
-        pureTractDry.assign((size_t) halfBins, 0.0f);
-        tiltDry.assign((size_t) halfBins, 0.0f);
-        warpedTract.assign((size_t) halfBins, 0.0f);
+        tiltDry.assign((size_t) halfBins, 1.0f);
+        envSpecFull.assign((size_t) halfBins, 0.0f);
+        pureTractSpec.assign((size_t) halfBins, 1.0f);
+        tiltSpec.assign((size_t) halfBins, 1.0f);
+        warpedTract.assign((size_t) halfBins, 1.0f);
         neuralGain.assign((size_t) halfBins, 1.0f);
-        targetTract.assign((size_t) halfBins, 1.0f);
-        targetTractSpec.assign((size_t) halfBins, 1.0f);
+        totalGain.assign((size_t) halfBins, 1.0f);
         consGain.assign((size_t) halfBins, 1.0f);
-        envSpec.assign((size_t) halfBins, 1.0f);
-        lfTiltComp.assign((size_t) halfBins, 1.0f);
-
-        // Precompute neutral LF-tilt compensation curve (~ +0.8 dB/oct gentle upper balance)
-        for (int k = 0; k < halfBins; ++k) {
-            const float f = std::max(80.0f, (float) k * binHz);
-            // Keeps regenerated LF source crisp without excessive dark roll-off
-            lfTiltComp[(size_t) k] = std::clamp(std::pow(f / 500.0f, 0.25f), 0.65f, 1.85f);
-        }
 
         timbre.prepare(sr, fftSize);
         reset();
@@ -573,32 +572,41 @@ public:
 
     void reset() {
         for (auto& v : dryAlignRing) std::fill(v.begin(), v.end(), 0.0f);
-        for (auto& v : specAlignRing) std::fill(v.begin(), v.end(), 0.0f);
         for (auto& v : dryInRing) std::fill(v.begin(), v.end(), 0.0f);
         for (auto& v : specInRing) std::fill(v.begin(), v.end(), 0.0f);
         for (auto& v : outRing) std::fill(v.begin(), v.end(), 0.0f);
         std::fill(lfInRing.begin(), lfInRing.end(), 0.0f);
+        std::fill(upperInRing.begin(), upperInRing.end(), 0.0f);
+        std::fill(subInRing.begin(), subInRing.end(), 0.0f);
         std::fill(breathInRing.begin(), breathInRing.end(), 0.0f);
-        std::fill(prevMagDryMono.begin(), prevMagDryMono.end(), 0.0f);
 
         neuralTimeline.reset();
         yinTimeline.reset();
         sampleClock = 0;
         hopCounter = 0;
-        lfPhase = 0.0;
-        unwrappedPeriods = 0;
-        sub2Phase = 0.0;
-        sub3Phase = 0.0;
         tremorPhase = 0.0;
         rngState = 0x9E3779B9u;
         jitterSmooth = 0.0f;
-        breathHpPrevIn = breathHpPrevOut = 0.0f;
-        pllRe = pllIm = 0.0f;
+
+        dcState = hpPrePrevIn = hpPrePrevOut = 0.0f;
+        f0SvfIc1 = f0SvfIc2 = f0Svf2Ic1 = f0Svf2Ic2 = 0.0f;
+        prevFundBp = 0.0f;
+        periodCounter = 0;
+        sub2SvfIc1 = sub2SvfIc2 = 0.0f;
+        sub3SvfIc1 = sub3SvfIc2 = 0.0f;
+        midLpHi = midLpLo = 0.0f;
+        midEnv = 0.02f;
+        upHpIc1 = upHpIc2 = 0.0f;
+        breathPink = breathHpIc1 = breathHpIc2 = 0.0f;
+        rmsFast = rmsTail = 0.0f;
+
         smoothVoiced = 0.0f;
-        smoothConsonant = 0.0f;
+        smoothSibilant = 0.0f;
         smoothTargetF0 = 140.0f;
         smoothLfGain = 1.0f;
-        prevAlignedDry = 0.0f;
+        smoothUpGain = 0.5f;
+        smoothSubGain = 0.5f;
+        smoothBreathGain = 0.5f;
         status = HybridStatus{};
     }
 
@@ -613,7 +621,7 @@ public:
 
     void pushYinEstimate(const PitchEstimate& e) {
         const float f0 = e.period > 0.0f ? (float) (sr / e.period) : 0.0f;
-        const float conf = e.voiced() ? std::clamp(1.0f - e.aperiodicity / 0.40f, 0.0f, 1.0f) : 0.0f;
+        const float conf = e.confidence > 0.0f ? e.confidence : (e.voiced() ? std::clamp(1.0f - e.aperiodicity / 0.45f, 0.0f, 1.0f) : 0.0f);
         yinTimeline.push(e.time, f0, conf, e.aperiodicity, e.rms);
     }
 
@@ -628,31 +636,25 @@ public:
         for (int i = 0; i < n; ++i) {
             const int wIdx = (int) (sampleClock & delayMask);
             const int dryRIdx = (int) ((sampleClock - coreAlignLat) & delayMask);
-            const int specRIdx = (int) ((sampleClock - spectralPad) & delayMask);
             const int sIdx = (int) (sampleClock & stftMask);
 
-            float alignedDryMono = 0.0f;
             float alignedSpecMono = 0.0f;
             for (int c = 0; c < ch; ++c) {
                 dryAlignRing[(size_t) c][(size_t) wIdx] = rawInput[c][i];
-                specAlignRing[(size_t) c][(size_t) wIdx] = specAudio[c][i];
-
                 const float dSamp = sampleClock >= coreAlignLat ? dryAlignRing[(size_t) c][(size_t) dryRIdx] : 0.0f;
-                const float sSamp = sampleClock >= spectralPad ? specAlignRing[(size_t) c][(size_t) specRIdx] : 0.0f;
+                const float sSamp = specAudio[c][i];
 
                 dryInRing[(size_t) c][(size_t) sIdx] = dSamp;
                 specInRing[(size_t) c][(size_t) sIdx] = sSamp;
-                alignedDryMono += dSamp;
                 alignedSpecMono += sSamp;
 
                 // Read previously overlap-added STFT output and clear cell for future OLA
                 specAudio[c][i] = outRing[(size_t) c][(size_t) sIdx];
                 outRing[(size_t) c][(size_t) sIdx] = 0.0f;
             }
-            alignedDryMono /= (float) ch;
             alignedSpecMono /= (float) ch;
 
-            // Advance sample-continuous LF glottal source + subharmonics + pitch-sync breath
+            // Advance phase-locked excitation generators synchronized 1:1 with specAudio
             synthesizeExcitationSample(sIdx, alignedSpecMono, p);
 
             ++sampleClock;
@@ -671,198 +673,280 @@ private:
         return ((float) (rngState & 0x00FFFFFFu) / 8388608.0f) - 1.0f;
     }
 
+    static void stepTptSvf(float x, float fc, float srHz, float q, float& ic1, float& ic2, float& outLp, float& outBp, float& outHp) {
+        const float normFc = std::clamp(fc / srHz, 0.0004f, 0.44f);
+        const float g = std::tan((float) M_PI * normFc);
+        const float k = 1.0f / std::max(0.25f, q);
+        const float a1 = 1.0f / (1.0f + g * (g + k));
+        const float a2 = g * a1;
+        const float a3 = g * a2;
+        const float v3 = x - ic2;
+        const float v1 = a1 * ic1 + a2 * v3;
+        const float v2 = ic2 + a2 * ic1 + a3 * v3;
+        ic1 = 2.0f * v1 - ic1;
+        ic2 = 2.0f * v2 - ic2;
+        outBp = v1;
+        outLp = v2;
+        outHp = x - k * v1 - v2;
+    }
+
     void synthesizeExcitationSample(int sIdx, float alignedSpecMono, const HybridParams& p) {
-        // Gentle age tremor (~5.5 Hz) and organic jitter
+        const float srF = (float) sr;
         const float agePos = std::clamp(p.age / 50.0f, 0.0f, 1.0f);
         tremorPhase += 5.4 / sr;
         if (tremorPhase >= 1.0) tremorPhase -= 1.0;
 
         jitterSmooth += (nextNoise() - jitterSmooth) * (1.0f - (float) std::exp(-1.0 / (0.004 * sr)));
-        const float ageModSemitones = agePos > 0.02f ? agePos * agePos * (0.28f * (float) std::sin(2.0 * M_PI * tremorPhase) + 0.14f * jitterSmooth) : 0.0f;
+        const float ageMod = agePos > 0.02f ? agePos * agePos * (0.12f * (float) std::sin(2.0 * M_PI * tremorPhase) + 0.06f * jitterSmooth) : 0.0f;
+        const float targetF0 = std::clamp(smoothTargetF0 * std::pow(2.0f, ageMod / 12.0f), 42.0f, 1150.0f);
 
-        float targetF0 = smoothTargetF0 * std::pow(2.0f, ageModSemitones / 12.0f);
-        targetF0 = std::clamp(targetF0, 42.0f, 1150.0f);
+        // Track syllable RMS and tail envelope cleanly for breath/growl dynamics
+        const float absIn = std::abs(alignedSpecMono);
+        const float rmsAtt = 1.0f - (float) std::exp(-1.0 / (0.020 * sr));
+        const float rmsRel = 1.0f - (float) std::exp(-1.0 / (0.110 * sr));
+        rmsFast += (absIn - rmsFast) * rmsAtt;
+        rmsTail += (absIn - rmsTail) * (absIn > rmsTail ? rmsAtt : rmsRel);
+        const float sylEnv = std::max(rmsFast, rmsTail * 0.72f);
 
-        // Soft complex demodulator at targetF0 to gently keep LF phase in lock with Signalsmith fundamental
-        if (smoothVoiced > 0.45f && p.regen > 0.02f && p.regen < 0.98f) {
-            const float ang = (float) (2.0 * M_PI * lfPhase);
-            const float c = std::cos(ang), s = std::sin(ang);
-            const float kPll = 1.0f - (float) std::exp(-1.0 / (0.025 * sr));
-            pllRe += (alignedSpecMono * c - pllRe) * kPll;
-            pllIm += (-alignedSpecMono * s - pllIm) * kPll;
-            const float mag2 = pllRe * pllRe + pllIm * pllIm;
-            if (mag2 > 1e-8f) {
-                const float err = std::atan2(-pllIm, pllRe);
-                lfPhase += 0.0012 * std::sin(err);
-            }
+        // 1. Pre-condition signal (remove DC + sub-F0 rumble) before TPT quadrature fundamental SVF
+        dcState += (alignedSpecMono - dcState) * (1.0f - (float) std::exp(-2.0 * M_PI * 22.0 / sr));
+        const float noDc = alignedSpecMono - dcState;
+        const float hpAlpha = (float) std::exp(-2.0 * M_PI * (0.62f * targetF0) / srF);
+        const float preHp = hpAlpha * (hpPrePrevOut + noDc - hpPrePrevIn);
+        hpPrePrevIn = noDc;
+        hpPrePrevOut = preHp;
+
+        float f0Lp = 0.0f, f0Bp = 0.0f, f0Hp = 0.0f;
+        constexpr float kF0Q1 = 2.2f;
+        stepTptSvf(preHp, targetF0, srF, kF0Q1, f0SvfIc1, f0SvfIc2, f0Lp, f0Bp, f0Hp);
+        const float fundBp1 = f0Bp / kF0Q1;
+
+        float f0Lp2 = 0.0f, f0Bp2 = 0.0f, f0Hp2 = 0.0f;
+        constexpr float kF0Q2 = 1.4f;
+        stepTptSvf(fundBp1, targetF0, srF, kF0Q2, f0Svf2Ic1, f0Svf2Ic2, f0Lp2, f0Bp2, f0Hp2);
+        const float fundBp = f0Bp2 / kF0Q2;
+        const float fundLp = f0Lp2 / kF0Q2; // -90 deg quadrature with >18 dB H2 rejection
+
+        // Detect positive-going fundamental zero crossings for C0-continuous subharmonic period flips
+        if (prevFundBp <= 0.0f && fundBp > 0.0f) ++periodCounter;
+        prevFundBp = fundBp;
+
+        // Analytic instantaneous phase theta & envelope A_F0 locked 100% to alignedSpecMono
+        const float ampF0 = std::hypot(fundBp, fundLp);
+        float phase01 = 0.0f;
+        if (ampF0 > 1e-6f) {
+            float theta = std::atan2(fundLp, fundBp);
+            if (theta < 0.0f) theta += 2.0f * (float) M_PI;
+            phase01 = theta * (1.0f / (2.0f * (float) M_PI));
         }
 
-        const double inc = (double) targetF0 / sr;
-        lfPhase += inc;
-        if (lfPhase >= 1.0) {
-            lfPhase -= std::floor(lfPhase);
-            ++unwrappedPeriods;
-        }
-        if (lfPhase < 0.0) lfPhase += 1.0;
-
-        sub2Phase += inc * 0.5;
-        if (sub2Phase >= 1.0) sub2Phase -= std::floor(sub2Phase);
-        sub3Phase += inc * (1.0 / 3.0);
-        if (sub3Phase >= 1.0) sub3Phase -= std::floor(sub3Phase);
-
-        const float f0Norm = (float) inc;
-        // Age slightly increases open quotient (softer fold closure)
+        // 2. Phase-locked band-limited LF glottal pulse train
         const float glottalEff = std::clamp(p.glottal + agePos * 0.15f, -1.0f, 1.0f);
-        float glot = lfTable.sample((float) lfPhase, glottalEff, f0Norm);
+        const float f0Norm = targetF0 / srF;
+        const float lfRaw = lfTable.sample(phase01, glottalEff, f0Norm);
+        const float gateF0 = ampF0 > 1e-4f ? smoothVoiced : 0.0f;
+        float glotSample = lfRaw * ampF0 * gateF0;
+        if (agePos > 0.02f) glotSample *= (1.0f + 0.08f * agePos * jitterSmooth);
+        lfInRing[(size_t) sIdx] = glotSample;
 
-        // Growl / Vocal fry: diplophonia (period doubling) + F0/2 and F0/3 subharmonics
-        const float effortBoost = std::clamp(0.6f + 0.55f * p.effort, 0.4f, 1.4f);
-        const float growlAmt = std::clamp(p.growl * effortBoost, 0.0f, 1.0f);
-        if (growlAmt > 0.01f) {
-            const float periodGain = (unwrappedPeriods & 1) ? (1.0f - 0.35f * growlAmt) : 1.0f;
-            const float s2 = lfTable.sample((float) sub2Phase, -0.85f, f0Norm * 0.5f);
-            const float s3 = lfTable.sample((float) sub3Phase, -0.90f, f0Norm * 0.333f);
-            glot = glot * periodGain + growlAmt * (0.48f * s2 + 0.24f * s3);
-        }
+        // 3. Continuous zero-crossing F0/2 and F0/3 subharmonics (zero step clicks, zero beating)
+        const float sub2Sign = (periodCounter & 1u) ? -1.0f : 1.0f;
+        const uint32_t m3 = periodCounter % 3u;
+        const float sub3Sign = (m3 == 0u) ? 1.0f : (m3 == 1u ? -1.0f : 0.0f);
+        float s2Lp = 0.0f, s2Bp = 0.0f, s2Hp = 0.0f;
+        float s3Lp = 0.0f, s3Bp = 0.0f, s3Hp = 0.0f;
+        stepTptSvf(fundBp * sub2Sign, targetF0 * 0.5f, srF, 1.6f, sub2SvfIc1, sub2SvfIc2, s2Lp, s2Bp, s2Hp);
+        stepTptSvf(fundBp * sub3Sign, targetF0 / 3.0f, srF, 1.6f, sub3SvfIc1, sub3SvfIc2, s3Lp, s3Bp, s3Hp);
+        subInRing[(size_t) sIdx] = (0.72f * s2Bp + 0.34f * s3Bp) * gateF0;
 
-        // Gentle age amplitude shimmer
-        if (agePos > 0.02f) glot *= 1.0f + 0.10f * agePos * jitterSmooth;
-        lfInRing[(size_t) sIdx] = glot * smoothVoiced;
+        // 4. Mid-band (300..2800 Hz) DC-balanced asymmetric soft-clipper -> >2.2 kHz upper harmonic exciter
+        const float aHi = 1.0f - (float) std::exp(-2.0 * M_PI * 2800.0 / sr);
+        const float aLo = 1.0f - (float) std::exp(-2.0 * M_PI * 300.0 / sr);
+        midLpHi += (noDc - midLpHi) * aHi;
+        midLpLo += (noDc - midLpLo) * aLo;
+        const float midBand = midLpHi - midLpLo;
+        const float absMid = std::abs(midBand);
+        midEnv += (absMid - midEnv) * (absMid > midEnv ? rmsAtt : rmsRel);
+        const float midNorm = midBand / std::max(0.015f, midEnv * 1.9f);
+        const float shaped = std::tanh(midNorm * 1.45f + 0.32f * midNorm * midNorm);
+        float upLp = 0.0f, upBp = 0.0f, upHp = 0.0f;
+        stepTptSvf(shaped * midEnv * 1.6f, 2200.0f, srF, 0.7071f, upHpIc1, upHpIc2, upLp, upBp, upHp);
+        upperInRing[(size_t) sIdx] = upHp * gateF0;
 
-        // Pitch-synchronous glottal breath: 700 Hz high-passed noise modulated by glottal open phase
-        const float rawNoise = nextNoise();
-        const float hpAlpha = (float) std::exp(-2.0 * M_PI * 700.0 / sr);
-        const float hp = hpAlpha * (breathHpPrevOut + rawNoise - breathHpPrevIn);
-        breathHpPrevIn = rawNoise;
-        breathHpPrevOut = hp;
+        // 5. Pitch-synchronous velvet breath: 900 Hz HPF pink noise gated by glottal open phase + syllable envelope
+        const float white = nextNoise();
+        breathPink += (white - breathPink) * (1.0f - (float) std::exp(-2.0 * M_PI * 3400.0 / sr));
+        float bLp = 0.0f, bBp = 0.0f, bHp = 0.0f;
+        stepTptSvf(breathPink, 900.0f, srF, 0.7071f, breathHpIc1, breathHpIc2, bLp, bBp, bHp);
         const float oq = 0.32f + 0.50f * (glottalEff + 1.0f) * 0.5f;
-        const float openEnv = lfPhase < oq ? std::sin((float) M_PI * (float) lfPhase / oq) : 0.0f;
-        breathInRing[(size_t) sIdx] = hp * (0.35f + 0.65f * openEnv * openEnv);
+        const float openEnv = phase01 < oq ? std::sin((float) M_PI * phase01 / std::max(0.05f, oq)) : 0.0f;
+        const float breathGate = sylEnv > 0.0025f ? std::clamp((sylEnv - 0.0025f) / 0.015f, 0.0f, 1.0f) : 0.0f;
+        breathInRing[(size_t) sIdx] = bHp * (0.40f + 0.60f * openEnv) * breathGate * std::max(smoothVoiced, 0.25f * breathGate);
     }
 
     void processFrame(const HybridParams& p, bool useNeural) {
         const int64_t frameEnd = sampleClock;
         const int64_t frameCentreInInput = frameEnd - coreAlignLat - fftSize / 2;
 
-        // 1. Lookup aligned pitch estimate at the exact frame centre timestamp
-        const auto ne = neuralTimeline.query(frameCentreInInput);
+        // 1. Lookup sample-aligned YIN estimate (primary instantaneous) & neural estimate (octave validation)
         const auto ye = yinTimeline.query(frameCentreInInput);
-        const float f0In = (useNeural && ne.f0 > 42.0f) ? ne.f0 : (ye.f0 > 42.0f ? ye.f0 : ne.f0);
-        const float trackerConf = useNeural ? ne.confidence : ye.confidence;
-        const float aperiodicity = std::min(ne.aperiodicity, ye.aperiodicity);
+        const auto ne = neuralTimeline.query(frameCentreInInput);
+        float f0In = ye.f0 > 42.0f ? ye.f0 : (useNeural && ne.f0 > 42.0f ? ne.f0 : 0.0f);
+        if (useNeural && ye.f0 > 42.0f && ne.f0 > 42.0f && std::abs(ne.time - frameCentreInInput) < (int64_t) (sr * 0.22)) {
+            const float ratio = ne.f0 / ye.f0;
+            if (std::abs(ratio - 0.5f) < 0.09f || std::abs(ratio - 2.0f) < 0.16f) f0In = ne.f0;
+        }
+        const float trackerConf = ye.f0 > 42.0f ? ye.confidence : (useNeural ? ne.confidence : ye.confidence);
+        const float aperiodicity = std::min(ye.aperiodicity, ne.aperiodicity);
 
-        // 2. Gather delayed mono dry frame and compute dry magnitude + acoustic detectors
+        // 2. Analyze aligned dry frame solely for speaker profile learning and >3.5 kHz unvoiced sibilant gating
         double drySq = 0.0;
         for (int m = 0; m < fftSize; ++m) {
             const int rIdx = (int) ((frameEnd - fftSize + m) & stftMask);
             float s = 0.0f;
             for (int c = 0; c < ch; ++c) s += dryInRing[(size_t) c][(size_t) rIdx];
             s /= (float) ch;
-            monoDryFrame[(size_t) m] = s;
             drySq += (double) s * s;
             fftWork[(size_t) m] = {s * hannWin[(size_t) m], 0.0f};
         }
         const float frameRms = (float) std::sqrt(drySq / fftSize);
         fft(fftWork, false);
 
-        double logGeoSum = 0.0, arithSum = 0.0;
-        int flatCnt = 0;
-        double lowE = 0.0, highE = 0.0, fluxPos = 0.0, totalMag = 0.0;
-        const int bin500 = std::max(1, (int) (500.0f / binHz));
-        const int bin1500 = std::max(bin500 + 1, (int) (1500.0f / binHz));
-        const int bin3200 = std::max(bin1500 + 1, (int) (3200.0f / binHz));
-        const int bin11k = std::min(halfBins - 1, (int) (11000.0f / binHz));
+        const int bin100 = std::max(1, (int) (100.0f / binHz));
+        const int bin1200 = std::max(bin100 + 1, (int) (1200.0f / binHz));
+        const int bin3500 = std::min(halfBins - 1, (int) (3500.0f / binHz));
+        const int bin4800 = std::min(halfBins - 1, std::max(bin3500 + 1, (int) (4800.0f / binHz)));
+        const int bin12k = std::min(halfBins - 1, (int) (12000.0f / binHz));
 
+        double eLow = 0.0, eHigh = 0.0;
         for (int k = 0; k < halfBins; ++k) {
             const float m = std::abs(fftWork[(size_t) k]);
             magDryMono[(size_t) k] = m;
-            if (k >= 2 && k <= bin11k) {
-                const float lm = std::log(std::max(1e-6f, m));
-                const float prevLm = std::log(std::max(1e-6f, prevMagDryMono[(size_t) k]));
-                if (lm > prevLm) fluxPos += (lm - prevLm);
-                totalMag += m;
-                if (k >= bin500) {
-                    const float pwr = m * m + 1e-10f;
-                    logGeoSum += std::log(pwr);
-                    arithSum += pwr;
-                    ++flatCnt;
-                }
-                if (k < bin1500) lowE += (double) m * m;
-                if (k >= bin3200) highE += (double) m * m;
-            }
-            prevMagDryMono[(size_t) k] = m;
+            if (k >= bin100 && k <= bin1200) eLow += (double) m * m;
+            if (k >= bin3500 && k <= bin12k) eHigh += (double) m * m;
         }
+        const float hfRatio = (float) (eHigh / (eLow + 1e-9));
 
-        const float spectralFlatness =
-            flatCnt > 0 && arithSum > 1e-12 ? std::clamp((float) (std::exp(logGeoSum / flatCnt) / (arithSum / flatCnt)), 0.0f, 1.0f) : 0.0f;
-        const float hfRatio = (float) (highE / (lowE + 1e-9));
-        const float sibilantScore = std::clamp(0.55f * spectralFlatness + 0.45f * (hfRatio / (hfRatio + 0.45f)), 0.0f, 1.0f);
-        const float transientScore = frameRms > 0.002f ? std::clamp((float) (fluxPos / std::max(40.0, (double) bin11k * 0.45)), 0.0f, 1.0f) : 0.0f;
+        // 3. Gather aligned shifted mono frame for true source-filter separation on specAudio
+        for (int m = 0; m < fftSize; ++m) {
+            const int rIdx = (int) ((frameEnd - fftSize + m) & stftMask);
+            float s = 0.0f;
+            for (int c = 0; c < ch; ++c) s += specInRing[(size_t) c][(size_t) rIdx];
+            s /= (float) ch;
+            fftWork[(size_t) m] = {s * hannWin[(size_t) m], 0.0f};
+        }
+        fft(fftWork, false);
+        for (int k = 0; k < halfBins; ++k) magSpecMono[(size_t) k] = std::abs(fftWork[(size_t) k]);
 
-        // 3. Combined continuous voiced mask and consonant guard mask
+        // Continuous voicing mask + strictly unvoiced sibilant guard mask
         const float rawTrackerVoiced =
-            frameRms < 0.0012f ? 0.0f : std::clamp((trackerConf - 0.30f) / 0.35f, 0.0f, 1.0f) * std::clamp(1.2f - 0.7f * aperiodicity, 0.0f, 1.0f);
-        const float targetVoiced = rawTrackerVoiced * (1.0f - 0.80f * std::max(0.0f, sibilantScore - 0.35f)) * (1.0f - 0.55f * transientScore);
+            frameRms < 0.0012f ? 0.0f : std::clamp((trackerConf - 0.25f) / 0.35f, 0.0f, 1.0f) * std::clamp(1.15f - 0.75f * aperiodicity, 0.0f, 1.0f);
+        const float hfSuppress = hfRatio > 1.8f ? std::clamp((hfRatio - 1.8f) / 2.2f, 0.0f, 0.85f) : 0.0f;
+        const float targetVoiced = rawTrackerVoiced * (1.0f - hfSuppress);
         const float attackCoef = targetVoiced > smoothVoiced ? 0.45f : 0.18f;
         smoothVoiced += (targetVoiced - smoothVoiced) * attackCoef;
-        const float consActivity = p.consonantGuard ? std::clamp(std::max(1.0f - smoothVoiced, std::max(sibilantScore, transientScore)), 0.0f, 1.0f) : 0.0f;
-        smoothConsonant += (consActivity - smoothConsonant) * 0.35f;
 
-        // 4. Update smooth target F0 for the LF glottal oscillator
+        const float rawSibGate = (p.consonantGuard && frameRms > 0.0015f && hfRatio > 0.45f && rawTrackerVoiced < 0.72f)
+                                     ? std::clamp((hfRatio - 0.45f) / 0.85f, 0.0f, 1.0f) *
+                                           std::clamp((0.72f - rawTrackerVoiced) / 0.45f, 0.0f, 1.0f)
+                                     : 0.0f;
+        smoothSibilant += (rawSibGate - smoothSibilant) * (rawSibGate > smoothSibilant ? 0.75f : 0.35f);
+
+        // 4. Update smooth target F0 for phase-locked SVF
         const float pitchRatio = std::pow(2.0f, p.pitchSemitones / 12.0f);
         if (f0In > 42.0f && rawTrackerVoiced > 0.25f) {
             float desiredF0 = std::clamp(f0In * pitchRatio, 45.0f, 1100.0f);
-            // When steady pitch is active, compress fast fluctuations slightly toward learned character center
             if (p.steadyPitch && p.speakerMedianF0 > 40.0f) {
                 const float targetCentre = std::clamp(p.speakerMedianF0 * pitchRatio, 45.0f, 1100.0f);
-                desiredF0 = std::exp(std::log(desiredF0) * 0.72f + std::log(targetCentre) * 0.28f);
+                desiredF0 = std::exp(std::log(desiredF0) * 0.75f + std::log(targetCentre) * 0.25f);
             }
-            smoothTargetF0 += (desiredF0 - smoothTargetF0) * 0.45f;
+            smoothTargetF0 += (desiredF0 - smoothTargetF0) * 0.50f;
         }
 
-        // 5. Cepstral source-filter extraction + non-linear F1/F2/F3/F4 warp + Neural Bark timbre
-        warper.extractEnvelope(magDryMono.data(), f0In, envDryFull.data(), pureTractDry.data(), tiltDry.data());
+        // 5. Pure low-quefrency cepstral source-filter separation directly from specAudio + dry tilt/speaker learning
+        warper.extractEnvelope(magDryMono.data(), f0In, envDryFull.data(), nullptr, tiltDry.data());
         timbre.learnSpeaker(envDryFull.data(), smoothVoiced);
+
+        warper.extractEnvelope(magSpecMono.data(), smoothTargetF0, envSpecFull.data(), pureTractSpec.data(), tiltSpec.data());
 
         const float activeMix = p.characterIndex > 0
                                     ? 1.0f
                                     : std::clamp(p.regen + std::abs(p.formantSemitones) / 4.0f + std::abs(p.pitchSemitones) / 8.0f +
                                                      std::abs(p.glottal) + p.growl,
                                                  0.0f, 1.0f);
-        const float sharpness = activeMix * std::clamp(0.35f + 0.35f * p.regen + 0.25f * std::abs(p.formantSemitones) / 8.0f, 0.2f, 0.9f);
-        warper.warpEnvelope(pureTractDry.data(), p.formantSemitones, sharpness, warpedTract.data());
+        const float sharpness = activeMix * std::clamp(0.30f + 0.35f * p.regen + 0.25f * std::abs(p.formantSemitones) / 8.0f, 0.15f, 0.85f);
+        warper.warpEnvelope(pureTractSpec.data(), p.formantSemitones, sharpness, warpedTract.data());
 
         float hnrBias = 0.0f;
         timbre.evaluate(warpedTract.data(), p, neuralGain.data(), hnrBias);
 
-        // Build target formant tract filter and gentle consonant mouth-size filter
-        const float consFormant = std::clamp(p.formantSemitones * 0.30f, -2.5f, 2.5f);
-        warper.warpEnvelope(pureTractDry.data(), consFormant, 0.15f * activeMix, consGain.data());
+        // Compute total spectral gain: non-linear formant transfer * neural Bark timbre * H1-H2 glottal shaping
+        const float regenAmt = std::clamp(p.regen, 0.0f, 1.0f);
+        const float neuralAmt = 0.35f + 0.65f * regenAmt;
+        const float headWeight = std::clamp(std::max(0.0f, p.glottal) * 0.75f + std::clamp((p.pitchSemitones - 1.5f) / 10.0f, 0.0f, 1.0f) * 0.45f, 0.0f, 1.0f);
+        const float chestWeight = std::clamp(std::max(0.0f, -p.glottal) * 0.75f + std::clamp((-p.pitchSemitones - 1.5f) / 10.0f, 0.0f, 1.0f) * 0.45f, 0.0f, 1.0f);
+        const float f0Ref = std::clamp(smoothTargetF0, 50.0f, 550.0f);
+        const float fSub = std::max(42.0f, 0.72f * f0Ref);
+
         for (int k = 0; k < halfBins; ++k) {
-            const float specT = std::clamp(warpedTract[(size_t) k] * neuralGain[(size_t) k], 0.04f, 14.0f);
-            targetTractSpec[(size_t) k] = specT;
-            targetTract[(size_t) k] = std::clamp(specT * lfTiltComp[(size_t) k], 0.04f, 14.0f);
-            consGain[(size_t) k] = std::clamp(consGain[(size_t) k] / std::max(1e-4f, pureTractDry[(size_t) k]), 0.35f, 2.8f);
+            const float f = std::max(20.0f, (float) k * binHz);
+            const float tractTransfer = std::clamp(warpedTract[(size_t) k] / std::max(1e-4f, pureTractSpec[(size_t) k]), 0.16f, 6.0f);
+            const float neuralTerm = std::pow(std::clamp(neuralGain[(size_t) k], 0.2f, 4.0f), neuralAmt);
+
+            float glotDb = 0.0f;
+            if (headWeight > 0.005f) {
+                const float octF0 = std::log2(std::max(30.0f, f) / f0Ref);
+                glotDb += regenAmt * headWeight * 3.0f * std::exp(-octF0 * octF0 / 0.22f);
+                const float octGlare = std::log2(std::max(30.0f, f) / 2900.0f);
+                glotDb -= regenAmt * headWeight * 2.2f * std::exp(-octGlare * octGlare / 0.45f);
+            }
+            if (chestWeight > 0.005f) {
+                const float octChest = std::log2(std::max(30.0f, f) / 130.0f);
+                glotDb += regenAmt * chestWeight * 2.8f * std::exp(-octChest * octChest / 0.55f);
+                const float octBox = std::log2(std::max(30.0f, f) / 450.0f);
+                glotDb -= regenAmt * chestWeight * 1.4f * std::exp(-octBox * octBox / 0.30f);
+                const float octPres = std::log2(std::max(30.0f, f) / 4200.0f);
+                glotDb += regenAmt * chestWeight * 2.0f * std::exp(-octPres * octPres / 0.75f);
+            }
+            if (f < fSub) glotDb -= 5.0f * (1.0f - f / fSub);
+            const float glotTerm = std::pow(10.0f, glotDb / 20.0f);
+
+            totalGain[(size_t) k] = std::clamp(tractTransfer * neuralTerm * glotTerm, 0.12f, 7.0f);
+
+            // Subtle high-frequency sibilant tilt compensation (>3.5 kHz unshifted guard only)
+            const float sibTiltDb = std::clamp(p.formantSemitones * 0.22f, -1.8f, 1.8f) * activeMix;
+            consGain[(size_t) k] = std::pow(10.0f, sibTiltDb / 20.0f);
         }
 
-        // 6. FFT of the continuous LF glottal source and pitch-sync breath excitation
+        // Convert totalGain magnitude curve into causal minimum-phase complex filter (zero pre-echo)
+        warper.computeMinimumPhaseFilter(totalGain.data(), minPhaseFilter.data());
+
+        // 6. FFT of the four phase-locked excitation streams
         for (int m = 0; m < fftSize; ++m) {
             const int rIdx = (int) ((frameEnd - fftSize + m) & stftMask);
-            lfWork[(size_t) m] = {lfInRing[(size_t) rIdx] * hannWin[(size_t) m], 0.0f};
-            breathWork[(size_t) m] = {breathInRing[(size_t) rIdx] * hannWin[(size_t) m], 0.0f};
+            const float win = hannWin[(size_t) m];
+            lfWork[(size_t) m] = {lfInRing[(size_t) rIdx] * win, 0.0f};
+            upperWork[(size_t) m] = {upperInRing[(size_t) rIdx] * win, 0.0f};
+            subWork[(size_t) m] = {subInRing[(size_t) rIdx] * win, 0.0f};
+            breathWork[(size_t) m] = {breathInRing[(size_t) rIdx] * win, 0.0f};
         }
         fft(lfWork, false);
+        fft(upperWork, false);
+        fft(subWork, false);
         fft(breathWork, false);
 
-        const float regenAmt = std::clamp(p.regen * smoothVoiced, 0.0f, 1.0f);
-        const float breathMix = std::clamp(p.breath + std::max(0.0f, hnrBias) * 0.15f, 0.0f, 1.0f) * smoothVoiced;
-        const float consProtect = p.consonantGuard ? std::clamp(std::max(1.0f - smoothVoiced, transientScore * 0.85f), 0.0f, 1.0f) : 0.0f;
-        const float hfSibilant = p.consonantGuard ? std::clamp((sibilantScore - 0.25f) / 0.35f, 0.0f, 1.0f) : 0.0f;
-        const int bin2400 = (int) (2400.0f / binHz);
-        const int bin3600 = std::max(bin2400 + 1, (int) (3600.0f / binHz));
+        const int bin650 = std::max(2, (int) (650.0f / binHz));
+        const int bin800 = std::max(bin650 + 1, (int) (800.0f / binHz));
+        const int bin2000 = std::max(bin800 + 1, (int) (2000.0f / binHz));
         const int bin4500 = std::min(halfBins - 1, (int) (4500.0f / binHz));
 
-        // 7. Per-channel spectral fusion & inverse FFT overlap-add
+        const float breathMix = std::clamp(p.breath + std::max(0.0f, hnrBias) * 0.10f, 0.0f, 1.0f) * (0.35f + 0.65f * regenAmt);
+        const float effortBoost = std::clamp(0.65f + 0.50f * p.effort, 0.45f, 1.45f);
+        const float growlMix = std::clamp(p.growl * effortBoost, 0.0f, 1.0f) * (0.35f + 0.65f * regenAmt) * smoothVoiced;
+        const float downFactor = p.pitchSemitones < -0.5f ? std::clamp(-p.pitchSemitones / 10.0f, 0.15f, 1.0f) : 0.15f;
+        const float voicedMorph = 0.35f * regenAmt * smoothVoiced * smoothVoiced;
+
+        // 7. Per-channel causal minimum-phase filtering & distortion-free spectral fusion
         for (int c = 0; c < ch; ++c) {
             for (int m = 0; m < fftSize; ++m) {
                 const int rIdx = (int) ((frameEnd - fftSize + m) & stftMask);
@@ -872,63 +956,104 @@ private:
             fft(specChanWork, false);
             fft(dryChanWork, false);
 
-            for (int k = 0; k < halfBins; ++k) magSpecChan[(size_t) k] = std::abs(specChanWork[(size_t) k]);
-            warper.extractEnvelope(magSpecChan.data(), smoothTargetF0, envSpec.data(), nullptr, nullptr);
-
-            // Compute envelope-corrected Signalsmith power & raw LF power in voiced band for exact level matching
-            double specPow = 0.0, lfPow = 0.0, breathPow = 0.0;
-            for (int k = 1; k <= bin4500; ++k) {
-                const float envScale = std::clamp(targetTractSpec[(size_t) k] * tiltDry[(size_t) k] / std::max(1e-5f, envSpec[(size_t) k]), 0.08f, 6.0f);
-                const float ms = magSpecChan[(size_t) k] * envScale;
-                const float ml = std::abs(lfWork[(size_t) k]) * targetTract[(size_t) k];
-                const float mb = std::abs(breathWork[(size_t) k]) * targetTract[(size_t) k];
-                specPow += (double) ms * ms;
-                lfPow += (double) ml * ml;
-                breathPow += (double) mb * mb;
-            }
-            const float targetLfGain = lfPow > 1e-10 ? std::clamp((float) std::sqrt(specPow / lfPow), 0.0f, 8.0f) : 0.0f;
-            if (c == 0) smoothLfGain += (targetLfGain - smoothLfGain) * 0.40f;
-            const float lfGain = c == 0 ? smoothLfGain : targetLfGain;
-            const float breathGain = breathPow > 1e-10 ? std::clamp((float) std::sqrt(specPow / breathPow), 0.0f, 4.0f) * breathMix * 0.42f : 0.0f;
-
+            // Compute matched reference powers against filtered Signalsmith signal
+            double specPow = 0.0, lfPow = 0.0, upPow = 0.0, subPow = 0.0, breathPow = 0.0;
             double dryConsPow = 0.0, warpedConsPow = 0.0;
-            for (int k = bin2400; k < halfBins; ++k) {
-                const float dm = std::abs(dryChanWork[(size_t) k]);
-                const float cm = dm * consGain[(size_t) k];
-                dryConsPow += (double) dm * dm;
-                warpedConsPow += (double) cm * cm;
+            for (int k = 1; k < halfBins; ++k) {
+                const float yMag = std::abs(specChanWork[(size_t) k]) * totalGain[(size_t) k];
+                if (k <= bin4500) {
+                    specPow += (double) yMag * yMag;
+                    const float ml = std::abs(lfWork[(size_t) k]) * envSpecFull[(size_t) k] * totalGain[(size_t) k];
+                    lfPow += (double) ml * ml;
+                }
+                if (k <= bin650) {
+                    const float ms = std::abs(subWork[(size_t) k]) * totalGain[(size_t) k];
+                    subPow += (double) ms * ms;
+                }
+                if (k >= bin2000 && k <= bin12k) {
+                    const float excEnvK = std::clamp(warpedTract[(size_t) k] * tiltDry[(size_t) k], 1e-4f, 14.0f);
+                    const float mu = std::abs(upperWork[(size_t) k]) * excEnvK;
+                    upPow += (double) mu * mu;
+                }
+                if (k >= bin800 && k <= bin12k) {
+                    const float excEnvK = std::clamp(warpedTract[(size_t) k] * tiltDry[(size_t) k], 1e-4f, 14.0f);
+                    const float mb = std::abs(breathWork[(size_t) k]) * excEnvK;
+                    breathPow += (double) mb * mb;
+                }
+                if (k >= bin3500) {
+                    const float dm = std::abs(dryChanWork[(size_t) k]);
+                    const float cm = dm * consGain[(size_t) k];
+                    dryConsPow += (double) dm * dm;
+                    warpedConsPow += (double) cm * cm;
+                }
             }
+
+            const float refOk = specPow > 1e-7 ? 1.0f : 0.0f;
+            const float tgtLfGain = (refOk > 0.0f && lfPow > 1e-10) ? std::clamp((float) std::sqrt(specPow / lfPow), 0.0f, 2.5f) : 0.0f;
+            const float tgtUpGain = (refOk > 0.0f && upPow > 1e-10) ? std::clamp((float) std::sqrt((specPow * 0.22) / upPow), 0.0f, 1.4f) : 0.0f;
+            const float tgtSubGain = (refOk > 0.0f && subPow > 1e-10) ? std::clamp((float) std::sqrt((specPow * 0.38) / subPow), 0.0f, 1.6f) : 0.0f;
+            const float tgtBreathGain = (refOk > 0.0f && breathPow > 1e-10) ? std::clamp((float) std::sqrt((specPow * 0.16) / breathPow), 0.0f, 1.8f) : 0.0f;
+
+            if (c == 0) {
+                smoothLfGain += (tgtLfGain - smoothLfGain) * 0.35f;
+                smoothUpGain += (tgtUpGain - smoothUpGain) * 0.35f;
+                smoothSubGain += (tgtSubGain - smoothSubGain) * 0.35f;
+                smoothBreathGain += (tgtBreathGain - smoothBreathGain) * 0.35f;
+            }
+            const float lfGain = c == 0 ? smoothLfGain : tgtLfGain;
+            const float upGain = (c == 0 ? smoothUpGain : tgtUpGain) * regenAmt * smoothVoiced * downFactor;
+            const float subGain = (c == 0 ? smoothSubGain : tgtSubGain) * growlMix;
+            const float breathGain = (c == 0 ? smoothBreathGain : tgtBreathGain) * breathMix;
             const float consScale = warpedConsPow > 1e-10 ? std::clamp((float) std::sqrt(dryConsPow / warpedConsPow), 0.5f, 2.0f) : 1.0f;
 
+            double preExcPow = 0.0, postExcPow = 0.0;
             for (int k = 0; k < halfBins; ++k) {
-                const float envScale = std::clamp(targetTractSpec[(size_t) k] * tiltDry[(size_t) k] / std::max(1e-5f, envSpec[(size_t) k]), 0.08f, 6.0f);
-                const std::complex<float> ySpec = specChanWork[(size_t) k] * envScale;
-                const std::complex<float> yLf = lfWork[(size_t) k] * (targetTract[(size_t) k] * lfGain);
-                const std::complex<float> yBreath = breathWork[(size_t) k] * (targetTract[(size_t) k] * breathGain);
+                const std::complex<float> mp = minPhaseFilter[(size_t) k];
+                std::complex<float> yBase = specChanWork[(size_t) k] * mp;
 
-                // Comb-free hybrid crossfade with power-preserving magnitude correction
-                std::complex<float> yVoiced = ySpec * (1.0f - regenAmt) + yLf * regenAmt;
-                const float magNow = std::abs(yVoiced);
-                const float magGoal = std::abs(ySpec) * (1.0f - regenAmt) + std::abs(yLf) * regenAmt;
-                if (magNow > 1e-6f && regenAmt > 0.02f && regenAmt < 0.98f) {
-                    const float fix = std::clamp(magGoal / magNow, 0.75f, 1.75f);
-                    yVoiced *= fix;
+                // Comb-free, zero-phase-cancellation LF magnitude shaping inside voiced harmonic band
+                if (k >= 1 && k <= bin4500 && voicedMorph > 0.01f) {
+                    const float magSpec = std::abs(yBase);
+                    const float magLf = std::abs(lfWork[(size_t) k]) * envSpecFull[(size_t) k] * totalGain[(size_t) k] * lfGain;
+                    if (magSpec > 1e-6f && magLf > 1e-6f) {
+                        const float magGoal = magSpec * (1.0f - voicedMorph) + magLf * voicedMorph;
+                        const float ratio = std::clamp(magGoal / magSpec, 0.55f, 1.85f);
+                        yBase *= ratio;
+                    }
                 }
-                yVoiced += yBreath;
+                if (k >= 1 && k <= bin4500) preExcPow += (double) std::norm(yBase);
 
-                // Consonant Guard: unshifted sibilants & plosives with subtle mouth-size F3/F4 tilt
-                float hf = 0.0f;
-                if (k >= bin3600) hf = 1.0f;
-                else if (k > bin2400) {
-                    const float u = (float) (k - bin2400) / (float) (bin3600 - bin2400);
-                    hf = 0.5f - 0.5f * std::cos((float) M_PI * u);
+                // Additive phase-locked upper harmonics & velvet breath shaped by full-bandwidth warpedTract * tiltDry
+                const float excEnvK = std::clamp(warpedTract[(size_t) k] * tiltDry[(size_t) k], 1e-4f, 14.0f);
+                const std::complex<float> unitMp = mp / std::max(1e-4f, totalGain[(size_t) k]);
+                std::complex<float> yVoiced = yBase;
+                yVoiced += upperWork[(size_t) k] * unitMp * (excEnvK * upGain);
+                if (k <= bin650) yVoiced += subWork[(size_t) k] * mp * subGain;
+                yVoiced += breathWork[(size_t) k] * unitMp * (excEnvK * breathGain);
+
+                if (k >= 1 && k <= bin4500) postExcPow += (double) std::norm(yVoiced);
+
+                // Consonant Guard: STRICTLY unvoiced AND STRICTLY > 3.5 kHz (zero original-voice bleed!)
+                float unshiftedMix = 0.0f;
+                if (k > bin3500 && smoothSibilant > 0.002f) {
+                    float hf = 1.0f;
+                    if (k < bin4800) {
+                        const float u = (float) (k - bin3500) / (float) (bin4800 - bin3500);
+                        hf = 0.5f - 0.5f * std::cos((float) M_PI * u);
+                    }
+                    unshiftedMix = smoothSibilant * hf;
                 }
-                const float unshiftedMix = std::clamp(consProtect + hf * hfSibilant * (1.0f - consProtect), 0.0f, 1.0f);
                 const std::complex<float> yCons = dryChanWork[(size_t) k] * (consGain[(size_t) k] * consScale);
-                const std::complex<float> yOut = yVoiced * (1.0f - unshiftedMix) + yCons * unshiftedMix;
+                const std::complex<float> yOut = unshiftedMix > 0.001f ? (yVoiced * (1.0f - unshiftedMix) + yCons * unshiftedMix) : yVoiced;
 
                 outChanWork[(size_t) k] = yOut;
                 if (k > 0 && k < fftSize / 2) outChanWork[(size_t) (fftSize - k)] = std::conj(yOut);
+            }
+
+            // Gentle energy balance guard so turning up Regen/Growl never overdrives
+            if (postExcPow > preExcPow * 1.15 && postExcPow > 1e-8) {
+                const float normScale = std::clamp((float) std::sqrt((preExcPow * 1.15) / postExcPow), 0.72f, 1.0f);
+                for (int k = 0; k < fftSize; ++k) outChanWork[(size_t) k] *= normScale;
             }
 
             fft(outChanWork, true);
@@ -943,8 +1068,8 @@ private:
         }
 
         status.voiced = smoothVoiced;
-        status.consonant = smoothConsonant;
-        status.regen = regenAmt;
+        status.consonant = smoothSibilant;
+        status.regen = regenAmt * smoothVoiced;
         status.subharmonic = std::clamp(p.growl * smoothVoiced, 0.0f, 1.0f);
     }
 
@@ -977,8 +1102,7 @@ private:
     double sr = 48000.0;
     int ch = 2, fftSize = 2048, halfBins = 1025, hop = 256;
     float binHz = 23.4375f;
-    int64_t neuralLatSamples = 8800;
-    int coreAlignLat = 8800, spectralPad = 0, totalLatency = 10848;
+    int coreAlignLat = 1536, totalLatency = 3584;
     int delayMask = 0, stftMask = 0;
 
     VocalTractWarper warper;
@@ -988,22 +1112,31 @@ private:
 
     std::vector<float> hannWin, synthWin;
     std::vector<std::complex<float>> twFwd, twInv;
-    std::vector<std::vector<float>> dryAlignRing, specAlignRing, dryInRing, specInRing, outRing;
-    std::vector<float> lfInRing, breathInRing;
+    std::vector<std::vector<float>> dryAlignRing, dryInRing, specInRing, outRing;
+    std::vector<float> lfInRing, upperInRing, subInRing, breathInRing;
 
-    std::vector<float> monoDryFrame, magDryMono, prevMagDryMono, magSpecChan, envDryFull, pureTractDry, tiltDry;
-    std::vector<float> warpedTract, neuralGain, targetTract, targetTractSpec, consGain, envSpec, lfTiltComp;
-    std::vector<std::complex<float>> fftWork, lfWork, breathWork, specChanWork, dryChanWork, outChanWork;
+    std::vector<float> magDryMono, magSpecMono, envDryFull, tiltDry, envSpecFull, pureTractSpec, tiltSpec;
+    std::vector<float> warpedTract, neuralGain, totalGain, consGain;
+    std::vector<std::complex<float>> fftWork, lfWork, upperWork, subWork, breathWork, specChanWork, dryChanWork, outChanWork;
+    std::vector<std::complex<float>> minPhaseFilter;
 
     int64_t sampleClock = 0;
     int hopCounter = 0;
-    double lfPhase = 0.0, sub2Phase = 0.0, sub3Phase = 0.0, tremorPhase = 0.0;
-    uint64_t unwrappedPeriods = 0;
+    double tremorPhase = 0.0;
     uint32_t rngState = 0x9E3779B9u;
-    float jitterSmooth = 0.0f, breathHpPrevIn = 0.0f, breathHpPrevOut = 0.0f;
-    float pllRe = 0.0f, pllIm = 0.0f;
-    float smoothVoiced = 0.0f, smoothConsonant = 0.0f, smoothTargetF0 = 140.0f, smoothLfGain = 1.0f;
-    float prevAlignedDry = 0.0f;
+    float jitterSmooth = 0.0f;
+
+    float dcState = 0.0f, hpPrePrevIn = 0.0f, hpPrePrevOut = 0.0f;
+    float f0SvfIc1 = 0.0f, f0SvfIc2 = 0.0f, f0Svf2Ic1 = 0.0f, f0Svf2Ic2 = 0.0f, prevFundBp = 0.0f;
+    uint32_t periodCounter = 0;
+    float sub2SvfIc1 = 0.0f, sub2SvfIc2 = 0.0f, sub3SvfIc1 = 0.0f, sub3SvfIc2 = 0.0f;
+    float midLpHi = 0.0f, midLpLo = 0.0f, midEnv = 0.02f;
+    float upHpIc1 = 0.0f, upHpIc2 = 0.0f;
+    float breathPink = 0.0f, breathHpIc1 = 0.0f, breathHpIc2 = 0.0f;
+    float rmsFast = 0.0f, rmsTail = 0.0f;
+
+    float smoothVoiced = 0.0f, smoothSibilant = 0.0f, smoothTargetF0 = 140.0f;
+    float smoothLfGain = 1.0f, smoothUpGain = 0.5f, smoothSubGain = 0.5f, smoothBreathGain = 0.5f;
     HybridStatus status{};
 };
 

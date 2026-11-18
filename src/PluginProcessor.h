@@ -40,7 +40,9 @@ inline constexpr const char* consonantGuard = "consonantGuard";
 inline constexpr const char* autotune = "autotune";
 } // namespace ids
 
-class AlptugDUBProcessor : public juce::AudioProcessor, private juce::Timer {
+class AlptugDUBProcessor : public juce::AudioProcessor,
+                           private juce::Timer,
+                           private juce::AudioProcessorValueTreeState::Listener {
 public:
     AlptugDUBProcessor();
     ~AlptugDUBProcessor() override;
@@ -84,6 +86,7 @@ public:
     std::atomic<int> waveWritePos{0};
     adub::VoiceSummary voiceSummary() const;
     void resetVoiceProfile() { resetProfile.store(true); }
+    bool isAutoUpdatingParams() const { return suppressLink.load(std::memory_order_relaxed); }
 
     /** A character voice, computed for this speaker's own voice. */
     struct Character {
@@ -103,6 +106,7 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
     void timerCallback() override;
+    void parameterChanged(const juce::String& parameterID, float newValue) override;
     void updateFilters(float bodyExtra, float airExtra, float presenceExtra);
     float param(const char* id) const { return state.getRawParameterValue(id)->load(); }
 
@@ -113,7 +117,13 @@ private:
     adub::NeuralPitch neural;
     adub::VoiceProfile profile;
     std::atomic<bool> resetProfile{false};
-    float autoPitch = 1000, autoFormant = 1000; // what auto-match last wrote (1000: nothing yet)
+    std::atomic<bool> suppressLink{false}, userTookOver{false};
+    std::atomic<bool> hasPendingAuto{false};
+    std::atomic<float> pendingAutoPitch{0.0f}, pendingAutoFormant{0.0f};
+    float lastAutoSetPitch = 0.0f, lastAutoSetFormant = 0.0f;
+    float lastLinkedPitch = 0.0f;
+    float fastLogF0 = 0.0f, activeAutoPitch = 0.0f, activeAutoFormant = 0.0f;
+    int voicedHopCount = 0;
     mutable juce::SpinLock profileLock;
     adub::VoiceSummary summaryCopy;
 

@@ -106,6 +106,8 @@ private:
     adub::VoiceSummary summary;
     int detectedKey = 0, detectedScale = 2;
     float tuneCents = 0.0f;
+    float prevPitchSlider = 0.0f, prevFormantSlider = 0.0f;
+    bool syncingLink = false;
 
     juce::Rectangle<float> headerArea, lensArea, leftModArea, centerModArea, rightModArea, charsArea;
 };

@@ -249,8 +249,46 @@ AlptugDUBEditor::AlptugDUBEditor(AlptugDUBProcessor& p)
     linkBtn.setButtonText(T("Bağla", "Link"));
     linkBtn.getProperties().set("analog", true);
     linkBtn.getProperties().set("cyanLed", true);
-    linkBtn.setTooltip(T("Gırtlak perdeyi izlesin", "Formant follows pitch"));
+    linkBtn.setTooltip(T("Perde ve gırtlağı orantılı biçimde birbirine bağlar", "Links pitch and formant proportionally"));
     linkAttach = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment>(p.state, ids::follow, linkBtn);
+
+    prevPitchSlider = (float) pitch.slider.getValue();
+    prevFormantSlider = (float) formant.slider.getValue();
+    linkBtn.onClick = [this] {
+        if (linkBtn.getToggleState() && std::abs(formant.slider.getValue()) < 0.05 && std::abs(pitch.slider.getValue()) > 0.1) {
+            syncingLink = true;
+            formant.slider.setValue(jlimit(-8.0, 8.0, pitch.slider.getValue() * 0.45), sendNotificationSync);
+            syncingLink = false;
+        }
+        prevPitchSlider = (float) pitch.slider.getValue();
+        prevFormantSlider = (float) formant.slider.getValue();
+    };
+    pitch.slider.onValueChange = [this] {
+        pitch.repaint();
+        if (!syncingLink && !proc.isAutoUpdatingParams() && linkBtn.getToggleState()) {
+            const float dp = (float) pitch.slider.getValue() - prevPitchSlider;
+            if (std::abs(dp) > 1e-4f) {
+                syncingLink = true;
+                formant.slider.setValue(jlimit(-8.0, 8.0, formant.slider.getValue() + dp * 0.45), sendNotificationSync);
+                syncingLink = false;
+            }
+        }
+        prevPitchSlider = (float) pitch.slider.getValue();
+        prevFormantSlider = (float) formant.slider.getValue();
+    };
+    formant.slider.onValueChange = [this] {
+        formant.repaint();
+        if (!syncingLink && !proc.isAutoUpdatingParams() && linkBtn.getToggleState()) {
+            const float df = (float) formant.slider.getValue() - prevFormantSlider;
+            if (std::abs(df) > 1e-4f) {
+                syncingLink = true;
+                pitch.slider.setValue(jlimit(-18.0, 18.0, pitch.slider.getValue() + df / 0.45), sendNotificationSync);
+                syncingLink = false;
+            }
+        }
+        prevPitchSlider = (float) pitch.slider.getValue();
+        prevFormantSlider = (float) formant.slider.getValue();
+    };
 
     autoMatchBtn.setButtonText(T("Sesime Uyarla", "Auto-Match"));
     autoMatchBtn.getProperties().set("analog", true);
