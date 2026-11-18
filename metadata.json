@@ -1,0 +1,7 @@
+{
+  "name": "AlptugDUB Studio 3.0",
+  "description": "Seslendirme ve dublaj için yeniden yapılandırılmış hibrit ses motoru, doğrusal olmayan formant bükme, ünsüz koruma ve uyarlanabilir Auto-Tune stüdyo konsolu.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
