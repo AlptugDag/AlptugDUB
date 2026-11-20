@@ -3,3 +3,5 @@ build-*/
 deps/
 test/*.wav
 .DS_Store
+web/node_modules/
+web/dist/
